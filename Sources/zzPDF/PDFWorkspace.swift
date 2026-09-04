@@ -4,12 +4,13 @@ import SwiftUI
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
-    case select, note, text, draw, rectangle, oval, redact, signature
+    case select, highlight, note, text, draw, rectangle, oval, redact, signature
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .select: "Select"
+        case .highlight: "Highlight"
         case .note: "Note"
         case .text: "Text"
         case .draw: "Draw"
@@ -22,6 +23,7 @@ enum CanvasTool: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .select: "cursorarrow"
+        case .highlight: "highlighter"
         case .note: "note.text"
         case .text: "textformat"
         case .draw: "pencil.tip"
@@ -101,6 +103,8 @@ final class PDFWorkspace: ObservableObject {
     private var undoActions: [PDFEditAction] = []
     private var redoActions: [PDFEditAction] = []
     private var noteOriginalText: String?
+    private var pendingNewNote: PDFAnnotation?
+    private var pendingNoteWasDirty = false
 
     weak var pdfView: InteractivePDFView?
 
@@ -137,6 +141,7 @@ final class PDFWorkspace: ObservableObject {
         fileURL = url
         currentPageIndex = 0
         selectedAnnotation = nil
+        pendingNewNote = nil
         undoActions.removeAll()
         redoActions.removeAll()
         isDirty = false
@@ -370,12 +375,11 @@ final class PDFWorkspace: ObservableObject {
         let annotation: PDFAnnotation?
         let tool = activeTool
         switch tool {
-        case .select:
+        case .select, .highlight:
             return
         case .note:
-            let item = PDFAnnotation(bounds: CGRect(x: point.x - 12, y: point.y - 12, width: 24, height: 24), forType: .text, withProperties: nil)
+            let item = NoteMarkerAnnotation(bounds: CGRect(x: point.x - 14, y: point.y - 14, width: 28, height: 28))
             item.contents = ""
-            item.color = color
             annotation = item
         case .text:
             let item = PDFAnnotation(bounds: CGRect(x: point.x, y: point.y - 20, width: 210, height: 34), forType: .freeText, withProperties: nil)
@@ -414,17 +418,25 @@ final class PDFWorkspace: ObservableObject {
         if let annotation {
             let wasDirty = isDirty
             page.addAnnotation(annotation)
-            registerEdit(wasDirtyBefore: wasDirty, undo: {
-                page.removeAnnotation(annotation)
-            }, redo: {
-                page.addAnnotation(annotation)
-            })
             selectAnnotation(annotation)
             changed("Annotation added")
             if tool == .note {
+                pendingNewNote = annotation
+                pendingNoteWasDirty = wasDirty
                 annotationDraftText = ""
                 noteOriginalText = ""
                 showNoteEditor = true
+            } else {
+                registerEdit(wasDirtyBefore: wasDirty, undo: {
+                    page.removeAnnotation(annotation)
+                }, redo: {
+                    page.addAnnotation(annotation)
+                })
+                if tool == .text {
+                    DispatchQueue.main.async { [weak self] in
+                        self?.pdfView?.beginInlineTextEditing(annotation, on: page)
+                    }
+                }
             }
         }
     }
@@ -522,7 +534,13 @@ final class PDFWorkspace: ObservableObject {
         guard let annotation = selectedAnnotation else { showNoteEditor = false; return }
         let oldText = noteOriginalText ?? annotation.contents ?? ""
         let newText = annotationDraftText
-        if oldText != newText {
+        if pendingNewNote === annotation, let page = annotation.page {
+            annotation.contents = newText
+            let wasDirty = pendingNoteWasDirty
+            registerEdit(wasDirtyBefore: wasDirty, undo: { page.removeAnnotation(annotation) }, redo: { page.addAnnotation(annotation) })
+            pendingNewNote = nil
+            changed("Note added")
+        } else if oldText != newText {
             let wasDirty = isDirty
             annotation.contents = newText
             registerEdit(wasDirtyBefore: wasDirty, undo: { annotation.contents = oldText }, redo: { annotation.contents = newText })
@@ -531,6 +549,34 @@ final class PDFWorkspace: ObservableObject {
         noteOriginalText = nil
         showNoteEditor = false
         if activeTool == .note { statusMessage = "Note saved — click to add another" }
+    }
+
+    func cancelNoteEditing() {
+        if let annotation = pendingNewNote {
+            annotation.page?.removeAnnotation(annotation)
+            pendingNewNote = nil
+            selectedAnnotation = nil
+            isDirty = pendingNoteWasDirty
+            activeTool = .select
+            statusMessage = "Unsaved note removed"
+            pdfView?.refreshInteractionAppearance()
+        }
+        noteOriginalText = nil
+        showNoteEditor = false
+        objectWillChange.send()
+    }
+
+    func updateEditableText(in annotation: PDFAnnotation, to value: String) {
+        let isWidget = annotation.type == PDFAnnotationSubtype.widget.rawValue
+        let oldValue = isWidget ? (annotation.widgetStringValue ?? "") : (annotation.contents ?? "")
+        guard oldValue != value else { return }
+        let wasDirty = isDirty
+        let apply: (String) -> Void = { text in
+            if isWidget { annotation.widgetStringValue = text } else { annotation.contents = text }
+        }
+        apply(value)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { apply(oldValue) }, redo: { apply(value) })
+        changed(isWidget ? "Form field updated" : "Text updated")
     }
 
     func importSignatureImage() {
@@ -689,6 +735,7 @@ final class PDFWorkspace: ObservableObject {
     func changed(_ message: String) {
         isDirty = true
         statusMessage = message
+        pdfView?.needsDisplay = true
         objectWillChange.send()
     }
 

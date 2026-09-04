@@ -134,7 +134,7 @@ struct InspectorPanel: View {
                 TextField("Text to insert", text: $workspace.textToInsert, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
             }
-            if workspace.activeTool != .select && workspace.activeTool != .redact {
+            if workspace.activeTool != .select && workspace.activeTool != .highlight && workspace.activeTool != .redact {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -171,6 +171,7 @@ struct InspectorPanel: View {
     private var toolHint: String {
         switch workspace.activeTool {
         case .select: "Select text, annotations, or fill form fields directly. Double-click a note to edit it."
+        case .highlight: "Drag across text to highlight it immediately. The tool stays active for the next passage."
         case .note: "Click the page, then type the note immediately."
         case .text: "Click the page to insert the text."
         case .draw: "Drag on the page to draw freehand."
@@ -401,17 +402,20 @@ struct NoteEditorSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
                 Button("Cancel") {
-                    workspace.showNoteEditor = false
+                    workspace.cancelNoteEditing()
                     dismiss()
                 }
+                .keyboardShortcut(.cancelAction)
                 Button("Save Note") {
                     workspace.commitSelectedNote()
                     dismiss()
                 }
+                .keyboardShortcut(.return, modifiers: [.command])
                 .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
         .frame(width: 520, height: 320)
+        .interactiveDismissDisabled()
     }
 }
