@@ -32,7 +32,7 @@ struct AppCommands: Commands {
                 .keyboardShortcut("z")
                 .disabled(!document.canUndo)
             Button("Redo") { document.redo() }
-                .keyboardShortcut("z", modifiers: [.command, .shift])
+                .keyboardShortcut("y", modifiers: [.command])
                 .disabled(!document.canRedo)
         }
         CommandGroup(after: .saveItem) {
@@ -67,6 +67,9 @@ struct AppCommands: Commands {
                 .disabled(!document.hasDocument)
         }
         CommandMenu("Annotate") {
+            Button("Select Tool") { document.activateSelectTool() }
+                .keyboardShortcut(.escape, modifiers: [])
+            Divider()
             Button("Highlight Selection") { document.addMarkup(.highlight) }
                 .keyboardShortcut("h", modifiers: [.command, .shift])
             Button("Underline Selection") { document.addMarkup(.underline) }

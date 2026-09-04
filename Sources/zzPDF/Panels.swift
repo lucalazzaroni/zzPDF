@@ -222,12 +222,7 @@ struct InspectorPanel: View {
             }
             HStack {
                 Button("Trim Margins") { workspace.changePageBox(.cropBox, inset: 8) }
-                Button("Reset") {
-                    guard let page = workspace.pdfDocument?.page(at: workspace.currentPageIndex) else { return }
-                    workspace.recordUndoState()
-                    page.setBounds(page.bounds(for: .mediaBox), for: .cropBox)
-                    workspace.changed("Crop reset")
-                }
+                Button("Reset") { workspace.resetCurrentCrop() }
             }
             .controlSize(.small)
         }

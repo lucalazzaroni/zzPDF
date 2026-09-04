@@ -65,10 +65,10 @@ enum PageLayoutMode: String, CaseIterable, Identifiable {
     }
 }
 
-private struct PDFHistoryState {
-    let data: Data
-    let pageIndex: Int
-    let wasDirty: Bool
+private struct PDFEditAction {
+    let undo: () -> Void
+    let redo: () -> Void
+    let wasDirtyBefore: Bool
 }
 
 @MainActor
@@ -79,7 +79,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var selectedAnnotation: PDFAnnotation?
     @Published var activeTool: CanvasTool = .select
     @Published var pageLayout: PageLayoutMode = .continuous
-    @Published var annotationColor: Color = .yellow
+    @Published var annotationColor: Color = .black
     @Published var lineWidth: Double = 2.5
     @Published var textToInsert = "Text"
     @Published var searchText = ""
@@ -98,8 +98,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var savedSignature: [[CGPoint]] = []
     @Published var signatureImage: NSImage?
 
-    private var undoStates: [PDFHistoryState] = []
-    private var redoStates: [PDFHistoryState] = []
+    private var undoActions: [PDFEditAction] = []
+    private var redoActions: [PDFEditAction] = []
+    private var noteOriginalText: String?
 
     weak var pdfView: InteractivePDFView?
 
@@ -108,8 +109,8 @@ final class PDFWorkspace: ObservableObject {
     var displayName: String { fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled" }
     var nsAnnotationColor: NSColor { NSColor(annotationColor) }
     var hasSignature: Bool { !savedSignature.isEmpty || signatureImage != nil }
-    var canUndo: Bool { !undoStates.isEmpty || pdfView?.undoManager?.canUndo == true }
-    var canRedo: Bool { !redoStates.isEmpty || pdfView?.undoManager?.canRedo == true }
+    var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
+    var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
 
     func openDocument() {
         let panel = NSOpenPanel()
@@ -136,8 +137,8 @@ final class PDFWorkspace: ObservableObject {
         fileURL = url
         currentPageIndex = 0
         selectedAnnotation = nil
-        undoStates.removeAll()
-        redoStates.removeAll()
+        undoActions.removeAll()
+        redoActions.removeAll()
         isDirty = false
         searchResults = []
         statusMessage = "\(document.pageCount) pages"
@@ -202,17 +203,25 @@ final class PDFWorkspace: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.message = "Documents will be inserted after the current page"
         guard panel.runModal() == .OK else { return }
-        recordUndoState()
+        let wasDirty = isDirty
         var insertionIndex = min(currentPageIndex + 1, document.pageCount)
+        var inserted: [(PDFPage, Int)] = []
         for url in panel.urls {
             guard let extra = PDFDocument(url: url), !extra.isLocked else { continue }
             for index in 0..<extra.pageCount {
                 if let page = extra.page(at: index)?.copy() as? PDFPage {
                     document.insert(page, at: insertionIndex)
+                    inserted.append((page, insertionIndex))
                     insertionIndex += 1
                 }
             }
         }
+        guard !inserted.isEmpty else { return }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for (page, _) in inserted.reversed() { removePage(page, from: document) }
+        }, redo: {
+            for (page, index) in inserted { document.insert(page, at: min(index, document.pageCount)) }
+        })
         changed("PDFs merged")
     }
 
@@ -222,16 +231,29 @@ final class PDFWorkspace: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.message = "Each image will become a page"
         guard panel.runModal() == .OK else { return }
-        if pdfDocument != nil { recordUndoState() }
+        let wasDirty = isDirty
+        let hadDocument = pdfDocument != nil
         let destination = pdfDocument ?? PDFDocument()
+        var inserted: [(PDFPage, Int)] = []
         for url in panel.urls {
             if let image = NSImage(contentsOf: url), let page = PDFPage(image: image) {
-                destination.insert(page, at: destination.pageCount)
+                let index = destination.pageCount
+                destination.insert(page, at: index)
+                inserted.append((page, index))
             }
         }
         if destination.pageCount > 0 {
             pdfDocument = destination
             fileURL = nil
+            registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
+                for (page, _) in inserted.reversed() { removePage(page, from: destination) }
+                if !hadDocument { self?.pdfDocument = nil }
+            }, redo: { [weak self] in
+                if !hadDocument { self?.pdfDocument = destination }
+                for (page, index) in inserted where destination.index(for: page) == NSNotFound {
+                    destination.insert(page, at: min(index, destination.pageCount))
+                }
+            })
             changed("Images imported")
         }
     }
@@ -257,9 +279,15 @@ final class PDFWorkspace: ObservableObject {
         let target = currentPageIndex + offset
         guard target >= 0, target < document.pageCount,
               let page = document.page(at: currentPageIndex) else { return }
-        recordUndoState()
+        let wasDirty = isDirty
+        let original = currentPageIndex
         document.removePage(at: currentPageIndex)
         document.insert(page, at: target)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            movePage(page, in: document, to: original)
+        }, redo: {
+            movePage(page, in: document, to: target)
+        })
         currentPageIndex = target
         changed("Page moved")
         selectPage(target)
@@ -268,16 +296,29 @@ final class PDFWorkspace: ObservableObject {
     func duplicateCurrentPage() {
         guard let document = pdfDocument,
               let page = document.page(at: currentPageIndex)?.copy() as? PDFPage else { return }
-        recordUndoState()
-        document.insert(page, at: currentPageIndex + 1)
+        let wasDirty = isDirty
+        let index = currentPageIndex + 1
+        document.insert(page, at: index)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            removePage(page, from: document)
+        }, redo: {
+            document.insert(page, at: min(index, document.pageCount))
+        })
         changed("Page duplicated")
         selectPage(currentPageIndex + 1)
     }
 
     func deleteCurrentPage() {
         guard let document = pdfDocument, document.pageCount > 0 else { return }
-        recordUndoState()
-        document.removePage(at: currentPageIndex)
+        guard let page = document.page(at: currentPageIndex) else { return }
+        let wasDirty = isDirty
+        let index = currentPageIndex
+        document.removePage(at: index)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            document.insert(page, at: min(index, document.pageCount))
+        }, redo: {
+            removePage(page, from: document)
+        })
         currentPageIndex = max(0, min(currentPageIndex, document.pageCount - 1))
         changed("Page deleted")
         if document.pageCount > 0 { selectPage(currentPageIndex) }
@@ -285,8 +326,11 @@ final class PDFWorkspace: ObservableObject {
 
     func rotateCurrentPage(by degrees: Int) {
         guard let page = pdfDocument?.page(at: currentPageIndex) else { return }
-        recordUndoState()
-        page.rotation = (page.rotation + degrees + 360) % 360
+        let wasDirty = isDirty
+        let oldRotation = page.rotation
+        let newRotation = (oldRotation + degrees + 360) % 360
+        page.rotation = newRotation
+        registerEdit(wasDirtyBefore: wasDirty, undo: { page.rotation = oldRotation }, redo: { page.rotation = newRotation })
         changed("Page rotated")
     }
 
@@ -295,7 +339,8 @@ final class PDFWorkspace: ObservableObject {
             statusMessage = "Select text in the document first"
             return
         }
-        recordUndoState()
+        let wasDirty = isDirty
+        var additions: [(PDFPage, PDFAnnotation)] = []
         for page in selection.pages {
             let bounds = selection.bounds(for: page)
             guard !bounds.isEmpty else { continue }
@@ -306,9 +351,16 @@ final class PDFWorkspace: ObservableObject {
             case .strikeOut: subtype = .strikeOut
             }
             let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
-            annotation.color = kind == .highlight ? nsAnnotationColor.withAlphaComponent(0.45) : nsAnnotationColor
+            annotation.color = kind == .highlight ? NSColor.systemYellow.withAlphaComponent(0.45) : nsAnnotationColor
             page.addAnnotation(annotation)
+            additions.append((page, annotation))
         }
+        guard !additions.isEmpty else { return }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for (page, annotation) in additions { page.removeAnnotation(annotation) }
+        }, redo: {
+            for (page, annotation) in additions { page.addAnnotation(annotation) }
+        })
         pdfView?.clearSelection()
         changed("Annotation added")
     }
@@ -360,13 +412,18 @@ final class PDFWorkspace: ObservableObject {
             annotation = makeSignatureAnnotation(at: point, color: color)
         }
         if let annotation {
-            recordUndoState()
+            let wasDirty = isDirty
             page.addAnnotation(annotation)
+            registerEdit(wasDirtyBefore: wasDirty, undo: {
+                page.removeAnnotation(annotation)
+            }, redo: {
+                page.addAnnotation(annotation)
+            })
             selectAnnotation(annotation)
             changed("Annotation added")
             if tool == .note {
-                activeTool = .select
                 annotationDraftText = ""
+                noteOriginalText = ""
                 showNoteEditor = true
             }
         }
@@ -438,8 +495,13 @@ final class PDFWorkspace: ObservableObject {
 
     func removeSelectedAnnotation() {
         guard let annotation = selectedAnnotation, let page = annotation.page else { return }
-        recordUndoState()
+        let wasDirty = isDirty
         page.removeAnnotation(annotation)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            page.addAnnotation(annotation)
+        }, redo: {
+            page.removeAnnotation(annotation)
+        })
         selectAnnotation(nil)
         changed("Annotation removed")
     }
@@ -449,17 +511,26 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.refreshInteractionAppearance()
     }
 
-    func beginEditingSelectedNote(recordHistory: Bool = true) {
+    func beginEditingSelectedNote() {
         guard let annotation = selectedAnnotation, annotation.type == PDFAnnotationSubtype.text.rawValue else { return }
-        if recordHistory { recordUndoState() }
         annotationDraftText = annotation.contents ?? ""
+        noteOriginalText = annotationDraftText
         showNoteEditor = true
     }
 
     func commitSelectedNote() {
-        selectedAnnotation?.contents = annotationDraftText
+        guard let annotation = selectedAnnotation else { showNoteEditor = false; return }
+        let oldText = noteOriginalText ?? annotation.contents ?? ""
+        let newText = annotationDraftText
+        if oldText != newText {
+            let wasDirty = isDirty
+            annotation.contents = newText
+            registerEdit(wasDirtyBefore: wasDirty, undo: { annotation.contents = oldText }, redo: { annotation.contents = newText })
+            changed("Note updated")
+        }
+        noteOriginalText = nil
         showNoteEditor = false
-        changed("Note updated")
+        if activeTool == .note { statusMessage = "Note saved — click to add another" }
     }
 
     func importSignatureImage() {
@@ -504,6 +575,12 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.autoScales = true
     }
 
+    func activateSelectTool() {
+        activeTool = .select
+        pdfView?.cancelActiveInteraction()
+        statusMessage = "Select tool"
+    }
+
     func fitPage() { pdfView?.autoScales = true }
     func actualSize() { pdfView?.scaleFactor = 1.0 }
     func zoom(by factor: CGFloat) { pdfView?.scaleFactor = max(0.25, min((pdfView?.scaleFactor ?? 1) * factor, 5)) }
@@ -536,51 +613,76 @@ final class PDFWorkspace: ObservableObject {
         guard let page = pdfDocument?.page(at: currentPageIndex) else { return }
         let bounds = page.bounds(for: box).insetBy(dx: inset, dy: inset)
         guard bounds.width > 50, bounds.height > 50 else { return }
-        recordUndoState()
+        let wasDirty = isDirty
+        let oldBounds = page.bounds(for: box)
         page.setBounds(bounds, for: box)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { page.setBounds(oldBounds, for: box) }, redo: { page.setBounds(bounds, for: box) })
         changed("Page margins changed")
     }
 
-    func recordUndoState() {
-        guard let document = pdfDocument, let data = document.dataRepresentation() else { return }
-        undoStates.append(PDFHistoryState(data: data, pageIndex: currentPageIndex, wasDirty: isDirty))
-        if undoStates.count > 25 { undoStates.removeFirst() }
-        redoStates.removeAll()
+    func resetCurrentCrop() {
+        guard let page = pdfDocument?.page(at: currentPageIndex) else { return }
+        let oldBounds = page.bounds(for: .cropBox)
+        let newBounds = page.bounds(for: .mediaBox)
+        guard oldBounds != newBounds else { return }
+        let wasDirty = isDirty
+        page.setBounds(newBounds, for: .cropBox)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { page.setBounds(oldBounds, for: .cropBox) }, redo: { page.setBounds(newBounds, for: .cropBox) })
+        changed("Crop reset")
+    }
+
+    func registerAnnotationGeometryChange(
+        _ annotation: PDFAnnotation,
+        from oldBounds: CGRect,
+        oldPaths: [NSBezierPath],
+        to newBounds: CGRect,
+        newPaths: [NSBezierPath],
+        wasDirtyBefore: Bool
+    ) {
+        guard oldBounds != newBounds || !pathsEqual(oldPaths, newPaths) else { return }
+        registerEdit(wasDirtyBefore: wasDirtyBefore, undo: {
+            applyGeometry(to: annotation, bounds: oldBounds, paths: oldPaths)
+        }, redo: {
+            applyGeometry(to: annotation, bounds: newBounds, paths: newPaths)
+        })
+    }
+
+    private func registerEdit(wasDirtyBefore: Bool, undo: @escaping () -> Void, redo: @escaping () -> Void) {
+        undoActions.append(PDFEditAction(undo: undo, redo: redo, wasDirtyBefore: wasDirtyBefore))
+        if undoActions.count > 100 { undoActions.removeFirst() }
+        redoActions.removeAll()
         objectWillChange.send()
     }
 
     func undo() {
-        guard let previous = undoStates.popLast() else {
+        guard let action = undoActions.popLast() else {
             pdfView?.undoManager?.undo()
             return
         }
-        guard let current = makeHistoryState() else { return }
-        redoStates.append(current)
-        restoreHistoryState(previous, message: "Change undone")
+        action.undo()
+        redoActions.append(action)
+        isDirty = action.wasDirtyBefore
+        finishHistoryChange("Change undone")
     }
 
     func redo() {
-        guard let next = redoStates.popLast() else {
+        guard let action = redoActions.popLast() else {
             pdfView?.undoManager?.redo()
             return
         }
-        guard let current = makeHistoryState() else { return }
-        undoStates.append(current)
-        restoreHistoryState(next, message: "Change redone")
+        action.redo()
+        undoActions.append(action)
+        isDirty = true
+        finishHistoryChange("Change redone")
     }
 
-    private func makeHistoryState() -> PDFHistoryState? {
-        guard let data = pdfDocument?.dataRepresentation() else { return nil }
-        return PDFHistoryState(data: data, pageIndex: currentPageIndex, wasDirty: isDirty)
-    }
-
-    private func restoreHistoryState(_ state: PDFHistoryState, message: String) {
-        guard let document = PDFDocument(data: state.data) else { return }
-        pdfDocument = document
-        currentPageIndex = min(state.pageIndex, max(document.pageCount - 1, 0))
-        isDirty = state.wasDirty
-        selectedAnnotation = nil
+    private func finishHistoryChange(_ message: String) {
+        if let document = pdfDocument {
+            currentPageIndex = max(0, min(currentPageIndex, document.pageCount - 1))
+        }
         statusMessage = message
+        pdfView?.needsDisplay = true
+        pdfView?.refreshInteractionAppearance()
         objectWillChange.send()
     }
 
@@ -615,4 +717,26 @@ final class PDFWorkspace: ObservableObject {
         alert.informativeText = message
         alert.runModal()
     }
+}
+
+private func removePage(_ page: PDFPage, from document: PDFDocument) {
+    let index = document.index(for: page)
+    if index != NSNotFound { document.removePage(at: index) }
+}
+
+private func movePage(_ page: PDFPage, in document: PDFDocument, to index: Int) {
+    removePage(page, from: document)
+    document.insert(page, at: min(max(index, 0), document.pageCount))
+}
+
+private func applyGeometry(to annotation: PDFAnnotation, bounds: CGRect, paths: [NSBezierPath]) {
+    annotation.bounds = bounds
+    guard annotation.type == PDFAnnotationSubtype.ink.rawValue else { return }
+    for path in annotation.paths ?? [] { annotation.remove(path) }
+    for path in paths { if let copy = path.copy() as? NSBezierPath { annotation.add(copy) } }
+}
+
+private func pathsEqual(_ lhs: [NSBezierPath], _ rhs: [NSBezierPath]) -> Bool {
+    guard lhs.count == rhs.count else { return false }
+    return zip(lhs, rhs).allSatisfy { $0.0.bounds == $0.1.bounds && $0.0.elementCount == $0.1.elementCount }
 }

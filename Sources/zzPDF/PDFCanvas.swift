@@ -60,13 +60,15 @@ struct PDFCanvas: NSViewRepresentable {
 
         @objc func annotationHit(_ notification: Notification) {
             guard let workspace else { return }
-            workspace.selectAnnotation(notification.userInfo?["PDFAnnotationHit"] as? PDFAnnotation)
+            let annotation = notification.userInfo?["PDFAnnotationHit"] as? PDFAnnotation
+            guard annotation?.type != PDFAnnotationSubtype.widget.rawValue else { return }
+            workspace.selectAnnotation(annotation)
         }
     }
 }
 
 final class InteractivePDFView: PDFView {
-    private enum AnnotationDragMode { case move, topLeft, topRight, bottomLeft, bottomRight }
+    private enum AnnotationDragMode: Equatable { case move, topLeft, topRight, bottomLeft, bottomRight }
 
     weak var workspace: PDFWorkspace?
     private var gesturePoints: [CGPoint] = []
@@ -79,7 +81,18 @@ final class InteractivePDFView: PDFView {
     private var annotationDragMode: AnnotationDragMode?
     private var annotationDragStart = CGPoint.zero
     private var annotationOriginalViewBounds = CGRect.zero
-    private var annotationUndoRecorded = false
+    private var annotationOriginalPageBounds = CGRect.zero
+    private var annotationOriginalPaths: [NSBezierPath] = []
+    private var annotationWasDirty = false
+    private var annotationDidChange = false
+    private lazy var drawingCursor: NSCursor = {
+        guard let symbol = NSImage(systemSymbolName: "pencil.tip", accessibilityDescription: "Draw") else {
+            return .crosshair
+        }
+        let image = symbol.withSymbolConfiguration(.init(pointSize: 18, weight: .medium)) ?? symbol
+        image.size = NSSize(width: 22, height: 22)
+        return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 19))
+    }()
     private lazy var interactionOverlay: PDFInteractionOverlay = {
         let overlay = PDFInteractionOverlay(frame: bounds)
         overlay.owner = self
@@ -125,6 +138,16 @@ final class InteractivePDFView: PDFView {
         interactionCursor.set()
     }
 
+    override var acceptsFirstResponder: Bool { true }
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53, let workspace, workspace.activeTool != .select {
+            workspace.activateSelectTool()
+            return
+        }
+        super.keyDown(with: event)
+    }
+
     override func mouseMoved(with event: NSEvent) {
         let viewPoint = convert(event.locationInWindow, from: nil)
         if let page = page(for: viewPoint, nearest: false) {
@@ -151,7 +174,8 @@ final class InteractivePDFView: PDFView {
         switch tool {
         case .select: return .arrow
         case .text: return .iBeam
-        case .note, .draw, .rectangle, .oval, .redact, .signature: return .crosshair
+        case .draw: return drawingCursor
+        case .note, .rectangle, .oval, .redact, .signature: return .crosshair
         }
     }
 
@@ -162,14 +186,34 @@ final class InteractivePDFView: PDFView {
         interactionOverlay.needsDisplay = true
     }
 
+    func cancelActiveInteraction() {
+        gesturePoints.removeAll()
+        gesturePage = nil
+        hoverPoint = nil
+        hoverPage = nil
+        draggedAnnotation = nil
+        draggedAnnotationPage = nil
+        annotationDragMode = nil
+        annotationDidChange = false
+        annotationOriginalPaths.removeAll()
+        refreshInteractionAppearance()
+    }
+
     override func mouseDown(with event: NSEvent) {
         guard let workspace else { return }
+        window?.makeFirstResponder(self)
         let viewPoint = convert(event.locationInWindow, from: nil)
 
         if workspace.activeTool == .select {
             if let page = page(for: viewPoint, nearest: false) {
                 let pagePoint = convert(viewPoint, to: page)
-                if let annotation = page.annotation(at: pagePoint), annotation.type != PDFAnnotationSubtype.widget.rawValue {
+                if let annotation = page.annotation(at: pagePoint), annotation.type == PDFAnnotationSubtype.widget.rawValue {
+                    workspace.selectAnnotation(nil)
+                    interactionOverlay.needsDisplay = true
+                    super.mouseDown(with: event)
+                    return
+                }
+                if let annotation = page.annotation(at: pagePoint) {
                     workspace.selectAnnotation(annotation)
                     if event.clickCount == 2 { workspace.beginEditingSelectedNote() }
                     beginAnnotationDrag(annotation, on: page, at: viewPoint)
@@ -212,10 +256,21 @@ final class InteractivePDFView: PDFView {
     override func mouseUp(with event: NSEvent) {
         guard let workspace else { return }
         if workspace.activeTool == .select, draggedAnnotation != nil {
+            if annotationDidChange, let annotation = draggedAnnotation {
+                workspace.registerAnnotationGeometryChange(
+                    annotation,
+                    from: annotationOriginalPageBounds,
+                    oldPaths: annotationOriginalPaths,
+                    to: annotation.bounds,
+                    newPaths: copiedPaths(from: annotation),
+                    wasDirtyBefore: annotationWasDirty
+                )
+            }
             draggedAnnotation = nil
             draggedAnnotationPage = nil
             annotationDragMode = nil
-            annotationUndoRecorded = false
+            annotationDidChange = false
+            annotationOriginalPaths.removeAll()
             interactionOverlay.needsDisplay = true
             return
         }
@@ -251,7 +306,10 @@ final class InteractivePDFView: PDFView {
         draggedAnnotationPage = page
         annotationDragStart = point
         annotationOriginalViewBounds = rect
-        annotationUndoRecorded = false
+        annotationOriginalPageBounds = annotation.bounds
+        annotationOriginalPaths = copiedPaths(from: annotation)
+        annotationWasDirty = workspace?.isDirty ?? false
+        annotationDidChange = false
     }
 
     private func updateAnnotationDrag(to point: CGPoint, workspace: PDFWorkspace) {
@@ -259,11 +317,6 @@ final class InteractivePDFView: PDFView {
               let mode = annotationDragMode else { return }
         let delta = CGPoint(x: point.x - annotationDragStart.x, y: point.y - annotationDragStart.y)
         guard abs(delta.x) > 0.5 || abs(delta.y) > 0.5 else { return }
-        if !annotationUndoRecorded {
-            workspace.recordUndoState()
-            annotationUndoRecorded = true
-        }
-
         var rect = annotationOriginalViewBounds
         switch mode {
         case .move:
@@ -283,13 +336,22 @@ final class InteractivePDFView: PDFView {
         }
         rect = rect.standardized
         guard rect.width >= 10, rect.height >= 10 else { return }
-        annotation.bounds = convert(rect, to: page).standardized
+        let newBounds = convert(rect, to: page).standardized
+        annotation.bounds = newBounds
+        if mode != .move, annotation.type == PDFAnnotationSubtype.ink.rawValue {
+            replacePaths(on: annotation, with: scaledPaths(annotationOriginalPaths, from: annotationOriginalPageBounds, to: newBounds))
+        }
+        annotationDidChange = true
         workspace.changed(mode == .move ? "Annotation moved" : "Annotation resized")
         interactionOverlay.needsDisplay = true
     }
 
     fileprivate func drawInteractionOverlay() {
         guard let workspace else { return }
+
+        if workspace.activeTool == .select {
+            drawFormFieldIndicators()
+        }
 
         if let annotation = workspace.selectedAnnotation, let page = annotation.page {
             let rect = convert(annotation.bounds, from: page).standardized.insetBy(dx: -3, dy: -3)
@@ -319,6 +381,20 @@ final class InteractivePDFView: PDFView {
         if workspace.activeTool == .signature, workspace.hasSignature,
            let page = hoverPage, let point = hoverPoint {
             drawSignaturePreview(at: point, on: page, workspace: workspace)
+        }
+    }
+
+    private func drawFormFieldIndicators() {
+        for page in visiblePages {
+            for annotation in page.annotations where annotation.type == PDFAnnotationSubtype.widget.rawValue {
+                let rect = convert(annotation.bounds, from: page).standardized
+                let indicator = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+                NSColor.controlAccentColor.withAlphaComponent(0.07).setFill()
+                indicator.fill()
+                NSColor.controlAccentColor.withAlphaComponent(0.42).setStroke()
+                indicator.lineWidth = 1
+                indicator.stroke()
+            }
         }
     }
 
@@ -387,6 +463,28 @@ final class InteractivePDFView: PDFView {
         border.setLineDash([5, 4], count: 2, phase: 0)
         NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
         border.stroke()
+    }
+}
+
+private func copiedPaths(from annotation: PDFAnnotation) -> [NSBezierPath] {
+    (annotation.paths ?? []).compactMap { $0.copy() as? NSBezierPath }
+}
+
+private func replacePaths(on annotation: PDFAnnotation, with paths: [NSBezierPath]) {
+    for path in annotation.paths ?? [] { annotation.remove(path) }
+    for path in paths { annotation.add(path) }
+}
+
+private func scaledPaths(_ paths: [NSBezierPath], from oldBounds: CGRect, to newBounds: CGRect) -> [NSBezierPath] {
+    guard oldBounds.width > 0, oldBounds.height > 0 else { return paths }
+    let scaleX = newBounds.width / oldBounds.width
+    let scaleY = newBounds.height / oldBounds.height
+    return paths.compactMap { source in
+        guard let path = source.copy() as? NSBezierPath else { return nil }
+        var transform = AffineTransform.identity
+        transform.scale(x: scaleX, y: scaleY)
+        path.transform(using: transform)
+        return path
     }
 }
 
