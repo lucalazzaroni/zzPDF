@@ -105,6 +105,8 @@ final class PDFWorkspace: ObservableObject {
     private var noteOriginalText: String?
     private var pendingNewNote: PDFAnnotation?
     private var pendingNoteWasDirty = false
+    private var pendingNewFreeText: PDFAnnotation?
+    private var pendingFreeTextWasDirty = false
 
     weak var pdfView: InteractivePDFView?
 
@@ -142,6 +144,7 @@ final class PDFWorkspace: ObservableObject {
         currentPageIndex = 0
         selectedAnnotation = nil
         pendingNewNote = nil
+        pendingNewFreeText = nil
         undoActions.removeAll()
         redoActions.removeAll()
         isDirty = false
@@ -426,17 +429,18 @@ final class PDFWorkspace: ObservableObject {
                 annotationDraftText = ""
                 noteOriginalText = ""
                 showNoteEditor = true
+            } else if tool == .text {
+                pendingNewFreeText = annotation
+                pendingFreeTextWasDirty = wasDirty
+                DispatchQueue.main.async { [weak self] in
+                    self?.pdfView?.beginInlineTextEditing(annotation, on: page)
+                }
             } else {
                 registerEdit(wasDirtyBefore: wasDirty, undo: {
                     page.removeAnnotation(annotation)
                 }, redo: {
                     page.addAnnotation(annotation)
                 })
-                if tool == .text {
-                    DispatchQueue.main.async { [weak self] in
-                        self?.pdfView?.beginInlineTextEditing(annotation, on: page)
-                    }
-                }
             }
         }
     }
@@ -569,14 +573,34 @@ final class PDFWorkspace: ObservableObject {
     func updateEditableText(in annotation: PDFAnnotation, to value: String) {
         let isWidget = annotation.type == PDFAnnotationSubtype.widget.rawValue
         let oldValue = isWidget ? (annotation.widgetStringValue ?? "") : (annotation.contents ?? "")
-        guard oldValue != value else { return }
-        let wasDirty = isDirty
         let apply: (String) -> Void = { text in
             if isWidget { annotation.widgetStringValue = text } else { annotation.contents = text }
         }
+        if pendingNewFreeText === annotation, let page = annotation.page {
+            apply(value)
+            let wasDirty = pendingFreeTextWasDirty
+            registerEdit(wasDirtyBefore: wasDirty, undo: { page.removeAnnotation(annotation) }, redo: { page.addAnnotation(annotation) })
+            pendingNewFreeText = nil
+            changed("Text added")
+            return
+        }
+        guard oldValue != value else { return }
+        let wasDirty = isDirty
         apply(value)
         registerEdit(wasDirtyBefore: wasDirty, undo: { apply(oldValue) }, redo: { apply(value) })
         changed(isWidget ? "Form field updated" : "Text updated")
+    }
+
+    func cancelEditableText(_ annotation: PDFAnnotation) {
+        guard pendingNewFreeText === annotation else { return }
+        annotation.page?.removeAnnotation(annotation)
+        pendingNewFreeText = nil
+        selectedAnnotation = nil
+        isDirty = pendingFreeTextWasDirty
+        activeTool = .select
+        statusMessage = "Unsaved text removed"
+        pdfView?.refreshInteractionAppearance()
+        objectWillChange.send()
     }
 
     func importSignatureImage() {
@@ -622,6 +646,15 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func activateSelectTool() {
+        if pendingNewNote != nil {
+            cancelNoteEditing()
+            return
+        }
+        if let annotation = pendingNewFreeText {
+            pdfView?.cancelInlineTextEditing()
+            if pendingNewFreeText != nil { cancelEditableText(annotation) }
+            return
+        }
         activeTool = .select
         pdfView?.cancelActiveInteraction()
         statusMessage = "Select tool"
