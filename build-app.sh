@@ -13,7 +13,7 @@ SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 if [[ -n "${ZZPDF_SDK_PATH:-}" ]]; then
     SDK_PATH="$ZZPDF_SDK_PATH"
 elif [[ "$(xcode-select -p 2>/dev/null || true)" == "/Library/Developer/CommandLineTools" && -d "/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk" ]]; then
-    # Compatibilità con alcune installazioni delle sole Command Line Tools.
+    # Compatibility fallback for some Command Line Tools-only installations.
     SDK_PATH="/Library/Developer/CommandLineTools/SDKs/MacOSX15.4.sdk"
 else
     SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
@@ -28,7 +28,7 @@ swift build -c release --disable-sandbox --scratch-path "$BUILD_DIR"
 
 EXECUTABLE_PATH="$(find "$BUILD_DIR" -type f -path '*/release/zzPDF' -perm +111 | head -n 1)"
 if [[ -z "$EXECUTABLE_PATH" ]]; then
-    echo "Eseguibile zzPDF non trovato dopo la compilazione." >&2
+    echo "zzPDF executable not found after compilation." >&2
     exit 1
 fi
 
@@ -50,4 +50,4 @@ rm -f "$ZIP_PATH"
 ditto -c -k --sequesterRsrc --keepParent "$APP_DIR" "$ZIP_PATH"
 
 echo "App: $APP_DIR"
-echo "Archivio: $ZIP_PATH"
+echo "Archive: $ZIP_PATH"

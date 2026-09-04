@@ -1,38 +1,41 @@
 # zzPDF
 
-Editor PDF nativo, privato e offline per macOS, scritto in SwiftUI e PDFKit.
+A private, offline, native PDF editor for macOS, built with SwiftUI and PDFKit.
 
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-147EFB)
 ![Swift](https://img.shields.io/badge/Swift-5.10-F05138)
 
-zzPDF permette di leggere, organizzare, compilare, annotare e firmare graficamente i PDF senza caricarli su servizi esterni. Per una firma digitale qualificata il documento esportato può essere firmato successivamente con Aruba.
+zzPDF lets you read, organize, fill, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
 
-![Schermata iniziale di zzPDF](docs/zzPDF-welcome.png)
+The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.4.0.zip`](dist/zzPDF-macOS-arm64-v0.4.0.zip).
 
-La build arm64 corrente è disponibile in [`dist/zzPDF-macOS-arm64-v0.3.0.zip`](dist/zzPDF-macOS-arm64-v0.3.0.zip).
+## Features
 
-## Funzioni incluse
+- Continuous, single-page, two-page, and two-page continuous layouts.
+- Page fitting, actual size, thumbnails, search, zoom, and navigation.
+- Visible annotation selection with a clear selection outline; drag to move it or use a corner handle to resize it.
+- Highlight, underline, strike-through, notes, and free text.
+- Live previews while drawing freehand, shapes, redactions, and signatures.
+- Graphic signatures drawn with a mouse or trackpad, or imported from an image file.
+- Immediate note editor after placing a note; double-click a note to edit it again.
+- Undo and redo with `Command-Z` and `Command-Shift-Z`.
+- Direct interaction with PDF form fields.
+- Page reordering, rotation, duplication, deletion, cropping, and extraction.
+- PDF merging and PDF creation from image files.
+- OCR for the current page using Apple Vision.
+- Standard save, flattened export, and password protection.
 
-- Visualizzazione continua, miniature, ricerca, zoom e navigazione.
-- Evidenziazione, sottolineatura, barratura, note e testo libero.
-- Disegno, rettangoli, ellissi, firma grafica e oscuramento.
-- Compilazione dei moduli PDF direttamente nel documento.
-- Riordino, rotazione, duplicazione, eliminazione ed estrazione pagine.
-- Unione di PDF e creazione di PDF da immagini.
-- OCR della pagina corrente con Vision.
-- Salvataggio, esportazione appiattita e protezione con password.
+A redaction becomes irreversible only in a copy produced with **Export Flattened**.
 
-L'oscuramento diventa irreversibile soltanto nella copia esportata con **Esporta appiattito**.
+## Requirements
 
-## Requisiti
+- macOS 14 Sonoma or later.
+- Apple Silicon for the prebuilt package included in `dist`.
+- Xcode 16 or compatible Command Line Tools to rebuild the project.
 
-- macOS 14 Sonoma o successivo.
-- Mac Apple Silicon per il pacchetto precompilato incluso nelle release.
-- Xcode 16 o Command Line Tools compatibili per ricompilare.
+## Build
 
-## Compilazione
-
-Clonare il repository e avviare lo script:
+Clone the repository and run the build script:
 
 ```bash
 git clone https://github.com/lucalazzaroni/zzPDF.git
@@ -40,34 +43,34 @@ cd zzPDF
 ./build-app.sh
 ```
 
-Vengono prodotti:
+The script creates:
 
 - `outputs/zzPDF.app`
 - `outputs/zzPDF-macOS.zip`
 
-La firma predefinita è locale (ad hoc), adatta a sviluppo e uso personale. Per usare un SDK specifico:
+The default signature is an ad hoc local signature suitable for development and personal use. To select a specific SDK:
 
 ```bash
 ZZPDF_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)" ./build-app.sh
 ```
 
-## Installazione locale
+## Local Installation
 
-Aprire `outputs/zzPDF-macOS.zip`, quindi trascinare `zzPDF.app` nella cartella Applicazioni.
+Open `outputs/zzPDF-macOS.zip`, then drag `zzPDF.app` to the Applications folder.
 
-## Distribuzione
+## Distribution
 
-Per distribuire l'app ad altri utenti occorrono un account Apple Developer, un certificato **Developer ID Application**, Hardened Runtime e notarizzazione Apple. La procedura completa, inclusi i comandi per firma e notarizzazione, è descritta in [DISTRIBUTION.md](DISTRIBUTION.md).
+Public distribution requires an Apple Developer account, a **Developer ID Application** certificate, Hardened Runtime, and Apple notarization. See [DISTRIBUTION.md](DISTRIBUTION.md) for the complete signing, notarization, Gatekeeper verification, and GitHub release procedure.
 
-## Struttura del progetto
+## Project Structure
 
 ```text
-Sources/zzPDF/       interfaccia e logica dell'app
-AppResources/        Info.plist e icona
-build-app.sh         compilazione e creazione del pacchetto
-scripts/notarize.sh  notarizzazione di una build firmata
+Sources/zzPDF/       application UI and PDF logic
+AppResources/        Info.plist and app icon
+build-app.sh         release build and app packaging
+scripts/notarize.sh  notarization of a Developer ID build
 ```
 
-## Stato del progetto
+## Project Status
 
-Questa è una prima versione funzionante. La riscrittura strutturale del contenuto originario di PDF arbitrari, mantenendo font e impaginazione come un editor professionale, richiederà un motore PDF aggiuntivo nelle versioni future.
+zzPDF is an early working release. Structural rewriting of arbitrary existing PDF content while perfectly retaining embedded fonts and layout will require an additional PDF engine in a future version.

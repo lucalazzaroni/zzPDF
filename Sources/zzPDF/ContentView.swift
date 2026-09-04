@@ -23,6 +23,10 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.showOCRResult) {
             OCRResultSheet(text: $workspace.ocrText)
         }
+        .sheet(isPresented: $workspace.showNoteEditor) {
+            NoteEditorSheet()
+                .environmentObject(workspace)
+        }
         .onOpenURL { url in
             guard url.pathExtension.lowercased() == "pdf" else { return }
             workspace.load(url)
@@ -54,14 +58,14 @@ struct ContentView: View {
                 .lineLimit(1)
             Spacer()
             if workspace.hasDocument {
-                Text("Pagina \(min(workspace.currentPageIndex + 1, workspace.pageCount)) di \(workspace.pageCount)")
+                Text("Page \(min(workspace.currentPageIndex + 1, workspace.pageCount)) of \(workspace.pageCount)")
                     .foregroundStyle(.secondary)
                 Divider().frame(height: 12)
                 Button { workspace.zoom(by: 0.85) } label: { Image(systemName: "minus.magnifyingglass") }
                     .buttonStyle(.plain)
                 Button { workspace.fitPage() } label: { Image(systemName: "arrow.up.left.and.arrow.down.right") }
                     .buttonStyle(.plain)
-                    .help("Adatta pagina")
+                    .help("Fit Page")
                 Button { workspace.zoom(by: 1.18) } label: { Image(systemName: "plus.magnifyingglass") }
                     .buttonStyle(.plain)
             }
@@ -78,16 +82,16 @@ struct ContentView: View {
             Button { workspace.sidebarVisible.toggle() } label: {
                 Image(systemName: "sidebar.left")
             }
-            .help("Miniature")
+            .help("Thumbnails")
             Button { workspace.openDocument() } label: {
                 Image(systemName: "folder")
             }
-            .help("Apri PDF")
+            .help("Open PDF")
             Button { workspace.save() } label: {
                 Image(systemName: "square.and.arrow.down")
             }
             .disabled(!workspace.hasDocument)
-            .help("Salva")
+            .help("Save")
         }
         ToolbarItem(placement: .principal) {
             if workspace.hasDocument {
@@ -97,12 +101,13 @@ struct ContentView: View {
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {
+            PageLayoutMenu()
             SearchField()
                 .frame(width: 210)
             Button { workspace.inspectorVisible.toggle() } label: {
                 Image(systemName: "sidebar.right")
             }
-            .help("Pannello strumenti")
+            .help("Inspector")
         }
     }
 }
@@ -131,23 +136,23 @@ struct WelcomeView: View {
                 VStack(spacing: 8) {
                     Text("zzPDF")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Tutto ciò che serve per lavorare con i PDF, senza complicazioni.")
+                    Text("Everything you need to work with PDFs, without the clutter.")
                         .font(.title3)
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 12) {
-                    Button("Apri un PDF…") { workspace.openDocument() }
+                    Button("Open a PDF…") { workspace.openDocument() }
                         .buttonStyle(.borderedProminent)
                         .controlSize(.large)
-                    Button("Crea da immagini…") { workspace.importImages() }
+                    Button("Create from Images…") { workspace.importImages() }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
                 }
                 HStack(spacing: 26) {
-                    WelcomeFeature(icon: "highlighter", text: "Annota")
-                    WelcomeFeature(icon: "signature", text: "Firma")
-                    WelcomeFeature(icon: "rectangle.3.group", text: "Organizza")
-                    WelcomeFeature(icon: "lock.shield", text: "Proteggi")
+                    WelcomeFeature(icon: "highlighter", text: "Annotate")
+                    WelcomeFeature(icon: "signature", text: "Sign")
+                    WelcomeFeature(icon: "rectangle.3.group", text: "Organize")
+                    WelcomeFeature(icon: "lock.shield", text: "Protect")
                 }
                 .padding(.top, 12)
             }
@@ -174,7 +179,7 @@ struct ToolPicker: View {
         HStack(spacing: 2) {
             ForEach(CanvasTool.allCases) { tool in
                 Button {
-                    if tool == .signature && workspace.savedSignature.isEmpty {
+                    if tool == .signature && !workspace.hasSignature {
                         workspace.showSignaturePad = true
                     }
                     workspace.activeTool = tool
@@ -202,12 +207,35 @@ struct ToolButtonStyle: ButtonStyle {
     }
 }
 
+struct PageLayoutMenu: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+
+    var body: some View {
+        Menu {
+            ForEach(PageLayoutMode.allCases) { layout in
+                Button {
+                    workspace.setPageLayout(layout)
+                } label: {
+                    Label(layout.label, systemImage: workspace.pageLayout == layout ? "checkmark" : layout.symbol)
+                }
+            }
+            Divider()
+            Button("Fit Page") { workspace.fitPage() }
+            Button("Actual Size") { workspace.actualSize() }
+        } label: {
+            Image(systemName: workspace.pageLayout.symbol)
+        }
+        .help("Page Layout")
+        .disabled(!workspace.hasDocument)
+    }
+}
+
 struct SearchField: View {
     @EnvironmentObject private var workspace: PDFWorkspace
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Cerca", text: $workspace.searchText)
+            TextField("Search", text: $workspace.searchText)
                 .textFieldStyle(.plain)
                 .onSubmit { workspace.updateSearch() }
             if !workspace.searchText.isEmpty {

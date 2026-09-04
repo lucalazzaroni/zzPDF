@@ -8,7 +8,7 @@ struct PageSidebar: View {
     var body: some View {
         VStack(spacing: 0) {
             HStack {
-                Text("PAGINE")
+                Text("PAGES")
                     .font(.caption2.weight(.semibold))
                     .foregroundStyle(.secondary)
                 Spacer()
@@ -39,16 +39,16 @@ struct PageSidebar: View {
             Divider()
             HStack(spacing: 12) {
                 Button { workspace.moveCurrentPage(by: -1) } label: { Image(systemName: "arrow.up") }
-                    .help("Sposta prima")
+                    .help("Move Up")
                     .disabled(workspace.currentPageIndex == 0)
                 Button { workspace.moveCurrentPage(by: 1) } label: { Image(systemName: "arrow.down") }
-                    .help("Sposta dopo")
+                    .help("Move Down")
                     .disabled(workspace.currentPageIndex >= workspace.pageCount - 1)
                 Button { workspace.duplicateCurrentPage() } label: { Image(systemName: "plus.square.on.square") }
-                    .help("Duplica")
+                    .help("Duplicate")
                 Spacer()
                 Button(role: .destructive) { workspace.deleteCurrentPage() } label: { Image(systemName: "trash") }
-                    .help("Elimina")
+                    .help("Delete")
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 13)
@@ -119,7 +119,7 @@ struct InspectorPanel: View {
             Text(workspace.displayName)
                 .font(.headline)
                 .lineLimit(1)
-            Text("\(workspace.pageCount) pagine")
+            Text("\(workspace.pageCount) pages")
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
@@ -131,16 +131,12 @@ struct InspectorPanel: View {
             Label(workspace.activeTool.label, systemImage: workspace.activeTool.symbol)
                 .font(.subheadline.weight(.semibold))
             if workspace.activeTool == .text {
-                TextField("Testo da inserire", text: $workspace.textToInsert, axis: .vertical)
-                    .textFieldStyle(.roundedBorder)
-            }
-            if workspace.activeTool == .note {
-                TextField("Contenuto della nota", text: $workspace.noteText, axis: .vertical)
+                TextField("Text to insert", text: $workspace.textToInsert, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
             }
             if workspace.activeTool != .select && workspace.activeTool != .redact {
                 HStack {
-                    Text("Colore").font(.callout)
+                    Text("Color").font(.callout)
                     Spacer()
                     ColorPicker("", selection: $workspace.annotationColor, supportsOpacity: true)
                         .labelsHidden()
@@ -149,7 +145,7 @@ struct InspectorPanel: View {
             if [.draw, .rectangle, .oval, .signature].contains(workspace.activeTool) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
-                        Text("Spessore").font(.callout)
+                        Text("Stroke Width").font(.callout)
                         Spacer()
                         Text(String(format: "%.1f pt", workspace.lineWidth))
                             .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
@@ -158,8 +154,11 @@ struct InspectorPanel: View {
                 }
             }
             if workspace.activeTool == .signature {
-                Button(workspace.savedSignature.isEmpty ? "Crea firma…" : "Modifica firma…") {
-                    workspace.showSignaturePad = true
+                HStack {
+                    Button(workspace.savedSignature.isEmpty ? "Draw Signature…" : "Edit Drawing…") {
+                        workspace.showSignaturePad = true
+                    }
+                    Button("Use Image…") { workspace.importSignatureImage() }
                 }
             }
             Text(toolHint)
@@ -171,45 +170,63 @@ struct InspectorPanel: View {
 
     private var toolHint: String {
         switch workspace.activeTool {
-        case .select: "Seleziona testo o compila direttamente i campi del modulo."
-        case .note: "Fai clic sulla pagina per inserire una nota."
-        case .text: "Fai clic sulla pagina per inserire il testo."
-        case .draw: "Trascina sulla pagina per disegnare a mano libera."
-        case .rectangle, .oval: "Trascina per disegnare la forma."
-        case .redact: "Trascina sull'area da oscurare, poi esporta una copia appiattita."
-        case .signature: "Fai clic nel punto in cui vuoi inserire la firma."
+        case .select: "Select text, annotations, or fill form fields directly. Double-click a note to edit it."
+        case .note: "Click the page, then type the note immediately."
+        case .text: "Click the page to insert the text."
+        case .draw: "Drag on the page to draw freehand."
+        case .rectangle, .oval: "Drag to draw the shape. A live preview shows its size."
+        case .redact: "Drag over sensitive content, then export a flattened copy to make the redaction permanent."
+        case .signature: "Move over the page to preview the signature, then click to place it."
         }
     }
 
     private var markupControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("TESTO SELEZIONATO")
+            Text(workspace.selectedAnnotation == nil ? "SELECTED TEXT" : "SELECTED ANNOTATION")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if workspace.selectedAnnotation != nil {
+                HStack {
+                    Label("Annotation selected", systemImage: "selection.pin.in.out")
+                        .font(.callout)
+                    Spacer()
+                }
+                if workspace.selectedAnnotation?.type == PDFAnnotationSubtype.text.rawValue {
+                    Button("Edit Note…") { workspace.beginEditingSelectedNote() }
+                        .controlSize(.small)
+                }
+            }
             HStack(spacing: 8) {
-                InspectorIconButton(icon: "highlighter", help: "Evidenzia") { workspace.addMarkup(.highlight) }
-                InspectorIconButton(icon: "underline", help: "Sottolinea") { workspace.addMarkup(.underline) }
-                InspectorIconButton(icon: "strikethrough", help: "Barra") { workspace.addMarkup(.strikeOut) }
-                InspectorIconButton(icon: "trash", help: "Rimuovi annotazione") { workspace.removeSelectedAnnotation() }
+                InspectorIconButton(icon: "highlighter", help: "Highlight") { workspace.addMarkup(.highlight) }
+                InspectorIconButton(icon: "underline", help: "Underline") { workspace.addMarkup(.underline) }
+                InspectorIconButton(icon: "strikethrough", help: "Strike Through") { workspace.addMarkup(.strikeOut) }
+                InspectorIconButton(icon: "trash", help: "Remove Annotation") { workspace.removeSelectedAnnotation() }
             }
         }
     }
 
     private var pageControls: some View {
         VStack(alignment: .leading, spacing: 10) {
-            Text("PAGINA")
+            Text("PAGE")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            Picker("Layout", selection: $workspace.pageLayout) {
+                ForEach(PageLayoutMode.allCases) { layout in
+                    Label(layout.label, systemImage: layout.symbol).tag(layout)
+                }
+            }
+            .onChange(of: workspace.pageLayout) { _, layout in workspace.setPageLayout(layout) }
             HStack(spacing: 8) {
-                InspectorIconButton(icon: "rotate.left", help: "Ruota a sinistra") { workspace.rotateCurrentPage(by: -90) }
-                InspectorIconButton(icon: "rotate.right", help: "Ruota a destra") { workspace.rotateCurrentPage(by: 90) }
-                InspectorIconButton(icon: "plus.square.on.square", help: "Duplica") { workspace.duplicateCurrentPage() }
-                InspectorIconButton(icon: "scissors", help: "Estrai") { workspace.extractCurrentPage() }
+                InspectorIconButton(icon: "rotate.left", help: "Rotate Left") { workspace.rotateCurrentPage(by: -90) }
+                InspectorIconButton(icon: "rotate.right", help: "Rotate Right") { workspace.rotateCurrentPage(by: 90) }
+                InspectorIconButton(icon: "plus.square.on.square", help: "Duplicate") { workspace.duplicateCurrentPage() }
+                InspectorIconButton(icon: "scissors", help: "Extract") { workspace.extractCurrentPage() }
             }
             HStack {
-                Button("Riduci margini") { workspace.changePageBox(.cropBox, inset: 8) }
-                Button("Ripristina") {
+                Button("Trim Margins") { workspace.changePageBox(.cropBox, inset: 8) }
+                Button("Reset") {
                     guard let page = workspace.pdfDocument?.page(at: workspace.currentPageIndex) else { return }
+                    workspace.recordUndoState()
                     page.setBounds(page.bounds(for: .mediaBox), for: .cropBox)
-                    workspace.changed("Ritaglio ripristinato")
+                    workspace.changed("Crop reset")
                 }
             }
             .controlSize(.small)
@@ -218,13 +235,13 @@ struct InspectorPanel: View {
 
     private var documentControls: some View {
         VStack(alignment: .leading, spacing: 9) {
-            Text("DOCUMENTO")
+            Text("DOCUMENT")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
-            Button { workspace.mergePDF() } label: { Label("Unisci PDF…", systemImage: "square.stack.3d.up") }
-            Button { workspace.importImages() } label: { Label("Aggiungi immagini…", systemImage: "photo.on.rectangle.angled") }
-            Button { workspace.recognizeCurrentPage() } label: { Label("Riconosci testo (OCR)", systemImage: "text.viewfinder") }
-            Button { workspace.exportFlattened() } label: { Label("Esporta appiattito…", systemImage: "doc.badge.gearshape") }
-            Button { workspace.showPasswordExport = true } label: { Label("Proteggi con password…", systemImage: "lock") }
+            Button { workspace.mergePDF() } label: { Label("Merge PDF…", systemImage: "square.stack.3d.up") }
+            Button { workspace.importImages() } label: { Label("Add Images…", systemImage: "photo.on.rectangle.angled") }
+            Button { workspace.recognizeCurrentPage() } label: { Label("Recognize Text (OCR)", systemImage: "text.viewfinder") }
+            Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
+            Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
         }
         .buttonStyle(.plain)
     }
@@ -255,8 +272,8 @@ struct SignatureSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
             VStack(alignment: .leading, spacing: 4) {
-                Text("La tua firma").font(.title2.bold())
-                Text("Disegna nel riquadro con il mouse o il trackpad.").foregroundStyle(.secondary)
+                Text("Your Signature").font(.title2.bold())
+                Text("Draw in the box with your mouse or trackpad, or import an image file.").foregroundStyle(.secondary)
             }
             GeometryReader { geometry in
                 Canvas { context, size in
@@ -290,12 +307,16 @@ struct SignatureSheet: View {
             }
             .frame(height: 220)
             HStack {
-                Button("Cancella") { workingStrokes = []; currentStroke = [] }
+                Button("Clear") { workingStrokes = []; currentStroke = [] }
+                Button("Use Image File…") {
+                    workspace.importSignatureImage()
+                    dismiss()
+                }
                 Spacer()
-                Button("Annulla") { dismiss() }
-                Button("Usa firma") {
+                Button("Cancel") { dismiss() }
+                Button("Use Drawing") {
                     strokes = workingStrokes
-                    workspace.activeTool = .signature
+                    workspace.useDrawnSignature(workingStrokes)
                     dismiss()
                 }
                 .buttonStyle(.borderedProminent)
@@ -317,19 +338,19 @@ struct PasswordExportSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Proteggi una copia").font(.title2.bold())
-            Text("La password proprietario è necessaria. Quella di apertura è facoltativa.")
+            Text("Protect a Copy").font(.title2.bold())
+            Text("An owner password is required. The password needed to open the file is optional.")
                 .foregroundStyle(.secondary)
             Form {
-                SecureField("Password proprietario", text: $ownerPassword)
-                SecureField("Password di apertura", text: $userPassword)
-                Toggle("Appiattisci annotazioni e firma", isOn: $flatten)
+                SecureField("Owner Password", text: $ownerPassword)
+                SecureField("Open Password", text: $userPassword)
+                Toggle("Flatten annotations and signature", isOn: $flatten)
             }
             .formStyle(.grouped)
             HStack {
                 Spacer()
-                Button("Annulla") { dismiss() }
-                Button("Esporta…") {
+                Button("Cancel") { dismiss() }
+                Button("Export…") {
                     workspace.exportProtected(ownerPassword: ownerPassword, userPassword: userPassword, flatten: flatten)
                 }
                 .buttonStyle(.borderedProminent)
@@ -347,24 +368,55 @@ struct OCRResultSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
-            Text("Testo riconosciuto").font(.title2.bold())
+            Text("Recognized Text").font(.title2.bold())
             TextEditor(text: $text)
                 .font(.body)
                 .padding(6)
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
             HStack {
-                Text("Puoi correggere il testo prima di copiarlo.")
+                Text("You can correct the text before copying it.")
                     .font(.caption).foregroundStyle(.secondary)
                 Spacer()
-                Button("Copia") {
+                Button("Copy") {
                     NSPasteboard.general.clearContents()
                     NSPasteboard.general.setString(text, forType: .string)
                 }
-                Button("Fine") { dismiss() }
+                Button("Done") { dismiss() }
                     .buttonStyle(.borderedProminent)
             }
         }
         .padding(24)
         .frame(width: 650, height: 500)
+    }
+}
+
+struct NoteEditorSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Note").font(.title2.bold())
+            TextEditor(text: $workspace.annotationDraftText)
+                .font(.body)
+                .padding(6)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Text("The note remains attached to its marker on the page.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") {
+                    workspace.showNoteEditor = false
+                    dismiss()
+                }
+                Button("Save Note") {
+                    workspace.commitSelectedNote()
+                    dismiss()
+                }
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 320)
     }
 }

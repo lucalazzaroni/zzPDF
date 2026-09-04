@@ -1,10 +1,10 @@
-# Compilazione e distribuzione di zzPDF
+# Building and Distributing zzPDF
 
-Questa guida copre l'uso locale, la firma Developer ID, la notarizzazione e la pubblicazione di una release GitHub.
+This guide covers local builds, Developer ID signing, Apple notarization, Gatekeeper verification, and GitHub releases.
 
-## 1. Preparazione del Mac
+## 1. Prepare the Mac
 
-Installare Xcode dall'App Store, aprirlo almeno una volta e accettare la licenza. Quindi verificare:
+Install Xcode from the App Store, open it at least once, and accept its license. Verify the environment:
 
 ```bash
 xcode-select -p
@@ -12,107 +12,107 @@ swift --version
 xcrun --sdk macosx --show-sdk-path
 ```
 
-Se necessario, selezionare Xcode:
+Select Xcode explicitly when necessary:
 
 ```bash
 sudo xcode-select --switch /Applications/Xcode.app/Contents/Developer
 ```
 
-## 2. Build locale
+## 2. Create a Local Build
 
 ```bash
 ./build-app.sh
 ```
 
-Lo script compila in modalità release, costruisce `outputs/zzPDF.app`, applica una firma locale ad hoc, ne verifica l'integrità e crea `outputs/zzPDF-macOS.zip`.
+The script compiles a release binary, assembles `outputs/zzPDF.app`, applies an ad hoc local signature, verifies the bundle, and creates `outputs/zzPDF-macOS.zip`.
 
-Per provare l'app:
+Launch the local build with:
 
 ```bash
 open "outputs/zzPDF.app"
 ```
 
-## 3. Certificato per la distribuzione
+## 3. Obtain a Distribution Certificate
 
-Iscriversi all'Apple Developer Program e creare o installare nel Portachiavi un certificato **Developer ID Application**. Elencare le identità disponibili con:
+Join the Apple Developer Program and create or install a **Developer ID Application** certificate in Keychain Access. List the available signing identities:
 
 ```bash
 security find-identity -v -p codesigning
 ```
 
-Ricompilare indicando il nome esatto del certificato:
+Rebuild using the certificate's exact name:
 
 ```bash
-SIGN_IDENTITY="Developer ID Application: NOME (TEAMID)" ./build-app.sh
+SIGN_IDENTITY="Developer ID Application: NAME (TEAMID)" ./build-app.sh
 ```
 
-Quando `SIGN_IDENTITY` non è `-`, lo script abilita Hardened Runtime e timestamp sicuro.
+When `SIGN_IDENTITY` is not `-`, the build script enables Hardened Runtime and requests a secure timestamp.
 
-Verificare firma e compatibilità Gatekeeper:
+Verify the signature and Gatekeeper assessment:
 
 ```bash
 codesign --verify --deep --strict --verbose=2 "outputs/zzPDF.app"
 spctl --assess --type execute --verbose=2 "outputs/zzPDF.app"
 ```
 
-Prima della notarizzazione, `spctl` può indicare che il pacchetto non è ancora notarizzato: è previsto.
+Before notarization, `spctl` may report that the app has not been notarized. This is expected.
 
-## 4. Credenziali per la notarizzazione
+## 4. Store Notarization Credentials
 
-Salvare una sola volta le credenziali nel Portachiavi. Apple richiede una password specifica per app:
+Store the credentials in Keychain once. Apple requires an app-specific password:
 
 ```bash
 xcrun notarytool store-credentials "zzPDF-notary" \
   --apple-id "APPLE_ID" \
   --team-id "TEAM_ID" \
-  --password "PASSWORD_SPECIFICA_PER_APP"
+  --password "APP_SPECIFIC_PASSWORD"
 ```
 
-Le credenziali non vengono salvate nel repository.
+These credentials are not stored in the repository.
 
-## 5. Notarizzazione
+## 5. Notarize the App
 
-Dopo aver creato una build firmata con Developer ID:
+After producing a Developer ID-signed build:
 
 ```bash
 ./scripts/notarize.sh
 ```
 
-Lo script invia lo ZIP ad Apple, attende il risultato, applica il ticket all'app e ricrea lo ZIP finale. Per usare un profilo diverso:
+The script submits the ZIP to Apple, waits for the result, staples the ticket to the app, validates it, and recreates the final ZIP. To use another Keychain profile:
 
 ```bash
-NOTARY_PROFILE="nome-profilo" ./scripts/notarize.sh
+NOTARY_PROFILE="profile-name" ./scripts/notarize.sh
 ```
 
-Controllo finale:
+Perform the final checks:
 
 ```bash
 xcrun stapler validate "outputs/zzPDF.app"
 spctl --assess --type execute --verbose=2 "outputs/zzPDF.app"
 ```
 
-## 6. Pubblicazione su GitHub
+## 6. Publish a GitHub Release
 
-Creare un tag coerente con `CFBundleShortVersionString` in `AppResources/Info.plist`:
+Create a tag that matches `CFBundleShortVersionString` in `AppResources/Info.plist`:
 
 ```bash
-git tag -a v0.3.0 -m "zzPDF 0.3.0"
+git tag -a v0.4.0 -m "zzPDF 0.4.0"
 git push origin main --tags
 ```
 
-Nella pagina **Releases** del repository, creare una release dal tag e allegare `outputs/zzPDF-macOS.zip`. Pubblicare soltanto lo ZIP generato dopo la notarizzazione.
+On the repository's **Releases** page, create a release from the tag and attach `outputs/zzPDF-macOS.zip`. Only publish the ZIP created after notarization.
 
-## 7. Aggiornare la versione
+## 7. Update the Version
 
-Prima di ogni release modificare in `AppResources/Info.plist`:
+Before each release, update these values in `AppResources/Info.plist`:
 
-- `CFBundleShortVersionString`: versione pubblica, per esempio `0.4.0`.
-- `CFBundleVersion`: numero di build crescente, per esempio `2`.
+- `CFBundleShortVersionString`: the public version, for example `0.5.0`.
+- `CFBundleVersion`: an always-increasing build number, for example `3`.
 
-Ricompilare, rifirmare, notarizzare e creare il tag corrispondente.
+Rebuild, sign, notarize, and create the matching tag.
 
-## Note
+## Notes
 
-- Non aggiungere al repository password, profili di notarizzazione esportati o certificati `.p12`.
-- Il pacchetto generato su un Mac Apple Silicon è arm64. Per una release universale occorre compilare anche per x86_64 e combinare i binari con `lipo`, oppure usare un progetto Xcode configurato con `ARCHS = arm64 x86_64`.
-- La distribuzione tramite Mac App Store richiede sandboxing, profili di provisioning e una pipeline distinta dalla distribuzione Developer ID descritta qui.
+- Never commit passwords, exported notarization profiles, API credentials, or `.p12` certificates.
+- A package built on an Apple Silicon Mac is arm64. A universal release requires an additional x86_64 build combined with `lipo`, or an Xcode project configured with `ARCHS = arm64 x86_64`.
+- Mac App Store distribution requires sandboxing, provisioning profiles, and a separate pipeline from the Developer ID workflow described here.

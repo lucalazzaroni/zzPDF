@@ -7,13 +7,13 @@ ZIP_PATH="$PROJECT_DIR/outputs/zzPDF-macOS.zip"
 NOTARY_PROFILE="${NOTARY_PROFILE:-zzPDF-notary}"
 
 if [[ ! -d "$APP_PATH" ]]; then
-    echo "Build non trovata: eseguire prima ./build-app.sh con SIGN_IDENTITY." >&2
+    echo "Build not found: run ./build-app.sh with SIGN_IDENTITY first." >&2
     exit 1
 fi
 
 SIGN_INFO="$(codesign -dv --verbose=2 "$APP_PATH" 2>&1 || true)"
 if [[ "$SIGN_INFO" != *"flags=0x10000(runtime)"* ]]; then
-    echo "La build non usa Hardened Runtime. Ricompilare con SIGN_IDENTITY." >&2
+    echo "The build does not use Hardened Runtime. Rebuild with SIGN_IDENTITY." >&2
     exit 1
 fi
 
@@ -26,4 +26,4 @@ xcrun stapler validate "$APP_PATH"
 rm -f "$ZIP_PATH"
 ditto -c -k --sequesterRsrc --keepParent "$APP_PATH" "$ZIP_PATH"
 
-echo "Pacchetto notarizzato: $ZIP_PATH"
+echo "Notarized package: $ZIP_PATH"
