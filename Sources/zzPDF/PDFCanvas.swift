@@ -100,13 +100,30 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
     private weak var textEditingAnnotation: PDFAnnotation?
     private weak var textEditingPage: PDFPage?
     private var inlineTextEditor: NSTextField?
+    private var formFieldIndicators: [ObjectIdentifier: PDFFormFieldIndicator] = [:]
     private lazy var drawingCursor: NSCursor = {
-        guard let symbol = NSImage(systemSymbolName: "pencil.tip", accessibilityDescription: "Draw") else {
-            return .crosshair
+        let image = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { rect in
+            let shaft = NSBezierPath()
+            shaft.move(to: NSPoint(x: 12, y: 12))
+            shaft.line(to: NSPoint(x: 21, y: 21))
+            shaft.lineCapStyle = .round
+            NSColor.white.withAlphaComponent(0.95).setStroke()
+            shaft.lineWidth = 6
+            shaft.stroke()
+            NSColor.black.setStroke()
+            shaft.lineWidth = 3.5
+            shaft.stroke()
+
+            let tip = NSBezierPath()
+            tip.move(to: NSPoint(x: 12, y: 12))
+            tip.line(to: NSPoint(x: 15.5, y: 13.2))
+            tip.line(to: NSPoint(x: 13.2, y: 15.5))
+            tip.close()
+            NSColor.black.setFill()
+            tip.fill()
+            return true
         }
-        let image = symbol.withSymbolConfiguration(.init(pointSize: 18, weight: .medium)) ?? symbol
-        image.size = NSSize(width: 22, height: 22)
-        return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 19))
+        return NSCursor(image: image, hotSpot: NSPoint(x: 12, y: 12))
     }()
     private lazy var highlighterCursor: NSCursor = {
         guard let symbol = NSImage(systemSymbolName: "highlighter", accessibilityDescription: "Highlight") else {
@@ -139,6 +156,7 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
         super.layout()
         interactionOverlay.frame = bounds
         interactionOverlay.needsDisplay = true
+        updateFormFieldIndicators()
         if let editor = inlineTextEditor, let annotation = textEditingAnnotation, let page = textEditingPage {
             editor.frame = convert(annotation.bounds, from: page).standardized.insetBy(dx: 1, dy: 1)
         }
@@ -221,6 +239,7 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
     func refreshInteractionAppearance() {
         window?.acceptsMouseMovedEvents = true
         window?.invalidateCursorRects(for: self)
+        updateFormFieldIndicators()
         interactionOverlay.needsDisplay = true
     }
 
@@ -240,7 +259,7 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
     func beginInlineTextEditing(_ annotation: PDFAnnotation, on page: PDFPage) {
         finishInlineTextEditing(commit: true)
         let rect = convert(annotation.bounds, from: page).standardized
-        let editor = NSTextField(frame: rect.insetBy(dx: 1, dy: 1))
+        let editor = InlinePDFTextField(frame: rect.insetBy(dx: 1, dy: 1))
         editor.stringValue = annotation.type == PDFAnnotationSubtype.widget.rawValue
             ? (annotation.widgetStringValue ?? "")
             : (annotation.contents ?? "")
@@ -252,18 +271,31 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
         editor.isBezeled = true
         editor.focusRingType = .exterior
         editor.delegate = self
+        editor.onCancel = { [weak self] in self?.cancelInlineTextEditing() }
         editor.wantsLayer = true
         editor.layer?.zPosition = 1_001
         textEditingAnnotation = annotation
         textEditingPage = page
         inlineTextEditor = editor
         addSubview(editor, positioned: .above, relativeTo: interactionOverlay)
-        window?.makeFirstResponder(editor)
+        DispatchQueue.main.async { [weak self, weak editor] in
+            guard let self, let editor else { return }
+            self.window?.makeFirstResponder(editor)
+            editor.selectText(nil)
+        }
     }
 
     func controlTextDidEndEditing(_ notification: Notification) {
         let movement = notification.userInfo?["NSTextMovement"] as? Int
         finishInlineTextEditing(commit: movement != NSCancelTextMovement)
+    }
+
+    func control(_ control: NSControl, textView: NSTextView, doCommandBy commandSelector: Selector) -> Bool {
+        if commandSelector == #selector(NSResponder.cancelOperation(_:)) {
+            cancelInlineTextEditing()
+            return true
+        }
+        return false
     }
 
     private func finishInlineTextEditing(commit: Bool) {
@@ -306,7 +338,7 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
                 if let annotation = widget(at: pagePoint, on: page) {
                     workspace.selectAnnotation(nil)
                     interactionOverlay.needsDisplay = true
-                    if annotation.widgetFieldType == .text && !annotation.isReadOnly {
+                    if isEditableTextWidget(annotation) {
                         beginInlineTextEditing(annotation, on: page)
                         return
                     }
@@ -421,6 +453,12 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
         }
     }
 
+    func isEditableTextWidget(_ annotation: PDFAnnotation) -> Bool {
+        guard annotation.type == PDFAnnotationSubtype.widget.rawValue, !annotation.isReadOnly else { return false }
+        let fieldType = annotation.widgetFieldType
+        return fieldType == .text || (fieldType != .button && fieldType != .choice && fieldType != .signature)
+    }
+
     fileprivate func shouldCaptureInteraction(at viewPoint: CGPoint) -> Bool {
         guard let workspace else { return false }
         if workspace.activeTool != .select { return true }
@@ -428,8 +466,9 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
            resizeHandle(at: viewPoint, for: selected, on: page) != nil { return true }
         guard let page = page(for: viewPoint, nearest: false) else { return false }
         let pagePoint = convert(viewPoint, to: page)
-        if widget(at: pagePoint, on: page) != nil { return true }
-        return page.annotation(at: pagePoint) != nil
+        if widget(at: pagePoint, on: page) != nil { return false }
+        guard let annotation = page.annotation(at: pagePoint) else { return false }
+        return annotation.type != PDFAnnotationSubtype.widget.rawValue
     }
 
     private func beginAnnotationDrag(
@@ -487,10 +526,14 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
         rect = rect.standardized
         guard rect.width >= 10, rect.height >= 10 else { return }
         let newBounds = convert(rect, to: page).standardized
-        if mode != .move, annotation.type == PDFAnnotationSubtype.ink.rawValue {
+        if mode != .move, let scalableInk = annotation as? ScalableInkAnnotation {
+            scalableInk.resize(to: newBounds)
+        } else if mode != .move, annotation.type == PDFAnnotationSubtype.ink.rawValue {
             replacePaths(on: annotation, with: scaledPaths(annotationOriginalPaths, from: annotationOriginalPageBounds, to: newBounds))
+            annotation.bounds = newBounds
+        } else {
+            annotation.bounds = newBounds
         }
-        annotation.bounds = newBounds
         annotationsChanged(on: page)
         needsDisplay = true
         annotationDidChange = true
@@ -500,10 +543,6 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
 
     fileprivate func drawInteractionOverlay() {
         guard let workspace else { return }
-
-        if workspace.activeTool == .select {
-            drawFormFieldIndicators()
-        }
 
         if let annotation = workspace.selectedAnnotation, let page = annotation.page {
             let rect = convert(annotation.bounds, from: page).standardized.insetBy(dx: -3, dy: -3)
@@ -536,17 +575,33 @@ final class InteractivePDFView: PDFView, NSTextFieldDelegate {
         }
     }
 
-    private func drawFormFieldIndicators() {
+    private func updateFormFieldIndicators() {
+        guard workspace?.activeTool == .select else {
+            for indicator in formFieldIndicators.values { indicator.removeFromSuperview() }
+            formFieldIndicators.removeAll()
+            return
+        }
+
+        var visibleIDs = Set<ObjectIdentifier>()
         for page in visiblePages {
             for annotation in page.annotations where annotation.type == PDFAnnotationSubtype.widget.rawValue {
-                let rect = convert(annotation.bounds, from: page).standardized
-                let indicator = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
-                NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
-                indicator.fill()
-                NSColor.controlAccentColor.withAlphaComponent(0.75).setStroke()
-                indicator.lineWidth = 1
-                indicator.stroke()
+                let id = ObjectIdentifier(annotation)
+                visibleIDs.insert(id)
+                let indicator: PDFFormFieldIndicator
+                if let existing = formFieldIndicators[id] {
+                    indicator = existing
+                } else {
+                    indicator = PDFFormFieldIndicator(frame: .zero)
+                    formFieldIndicators[id] = indicator
+                    addSubview(indicator, positioned: .below, relativeTo: interactionOverlay)
+                }
+                indicator.frame = convert(annotation.bounds, from: page).standardized
+                indicator.configure(owner: self, annotation: annotation, page: page)
             }
+        }
+        let staleIDs = formFieldIndicators.keys.filter { !visibleIDs.contains($0) }
+        for id in staleIDs {
+            formFieldIndicators.removeValue(forKey: id)?.removeFromSuperview()
         }
     }
 
@@ -660,6 +715,54 @@ final class PDFInteractionOverlay: NSView {
     override func draw(_ dirtyRect: NSRect) {
         super.draw(dirtyRect)
         owner?.drawInteractionOverlay()
+    }
+}
+
+final class PDFFormFieldIndicator: NSView {
+    private weak var owner: InteractivePDFView?
+    private weak var annotation: PDFAnnotation?
+    private weak var page: PDFPage?
+
+    override init(frame frameRect: NSRect) {
+        super.init(frame: frameRect)
+        wantsLayer = true
+        layer?.zPosition = 999
+        layer?.cornerRadius = 3
+        layer?.borderWidth = 1.5
+        layer?.borderColor = NSColor.controlAccentColor.withAlphaComponent(0.82).cgColor
+        layer?.backgroundColor = NSColor.controlAccentColor.withAlphaComponent(0.13).cgColor
+    }
+
+    required init?(coder: NSCoder) {
+        super.init(coder: coder)
+    }
+
+    func configure(owner: InteractivePDFView, annotation: PDFAnnotation, page: PDFPage) {
+        self.owner = owner
+        self.annotation = annotation
+        self.page = page
+    }
+
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let owner, let annotation, owner.isEditableTextWidget(annotation) else { return nil }
+        return self
+    }
+
+    override func mouseDown(with event: NSEvent) {
+        guard let owner, let annotation, let page else { return }
+        owner.beginInlineTextEditing(annotation, on: page)
+    }
+}
+
+final class InlinePDFTextField: NSTextField {
+    var onCancel: (() -> Void)?
+
+    override func keyDown(with event: NSEvent) {
+        if event.keyCode == 53 {
+            onCancel?()
+            return
+        }
+        super.keyDown(with: event)
     }
 }
 

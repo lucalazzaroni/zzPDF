@@ -464,18 +464,12 @@ final class PDFWorkspace: ObservableObject {
         let bounds = CGRect(x: minX - padding, y: minY - padding,
                             width: max(maxX - minX + padding * 2, 4),
                             height: max(maxY - minY + padding * 2, 4))
-        let path = NSBezierPath()
-        path.move(to: CGPoint(x: points[0].x - bounds.minX, y: points[0].y - bounds.minY))
-        for point in points.dropFirst() {
-            path.line(to: CGPoint(x: point.x - bounds.minX, y: point.y - bounds.minY))
-        }
-        let item = PDFAnnotation(bounds: bounds, forType: .ink, withProperties: nil)
-        item.color = color
-        let border = PDFBorder()
-        border.lineWidth = width
-        item.border = border
-        item.add(path)
-        return item
+        return ScalableInkAnnotation(
+            bounds: bounds,
+            pageStrokes: [points],
+            color: color,
+            lineWidth: width
+        )
     }
 
     func signatureBounds(at point: CGPoint) -> CGRect {
@@ -810,6 +804,10 @@ private func movePage(_ page: PDFPage, in document: PDFDocument, to index: Int) 
 }
 
 private func applyGeometry(to annotation: PDFAnnotation, bounds: CGRect, paths: [NSBezierPath]) {
+    if let scalableInk = annotation as? ScalableInkAnnotation {
+        scalableInk.resize(to: bounds)
+        return
+    }
     annotation.bounds = bounds
     guard annotation.type == PDFAnnotationSubtype.ink.rawValue else { return }
     for path in annotation.paths ?? [] { annotation.remove(path) }
