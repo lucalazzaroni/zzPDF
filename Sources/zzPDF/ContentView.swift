@@ -184,7 +184,9 @@ struct ToolPicker: View {
             ForEach(CanvasTool.allCases) { tool in
                 if tool == .highlight {
                     MarkupToolPicker()
-                } else if tool != .underline && tool != .strikeOut {
+                } else if tool == .rectangle {
+                    ShapeToolPicker()
+                } else if tool != .underline && tool != .strikeOut && tool != .oval {
                     Button {
                         if tool == .signature && !workspace.hasSignature {
                             workspace.showSignaturePad = true
@@ -214,37 +216,17 @@ struct MarkupToolPicker: View {
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            Button {
-                workspace.activeTool = preferredTool
-            } label: {
-                Image(systemName: displayedTool.symbol)
-                    .frame(width: 24, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .help(displayedTool.label)
-
-            Menu {
-                markupChoice(.highlight)
-                markupChoice(.underline)
-                markupChoice(.strikeOut)
-            } label: {
-                Image(systemName: "chevron.down")
-                    .font(.system(size: 8, weight: .bold))
-                    .frame(width: 12, height: 22)
-                    .contentShape(Rectangle())
-            }
-            .menuStyle(.borderlessButton)
-            .menuIndicator(.hidden)
-            .fixedSize()
-            .help("Choose Text Markup Tool")
+        Menu {
+            markupChoice(.highlight)
+            markupChoice(.underline)
+            markupChoice(.strikeOut)
+        } label: {
+            SubtoolMenuLabel(symbol: displayedTool.symbol, selected: workspace.activeTool.markupKind != nil)
         }
-        .foregroundStyle(workspace.activeTool.markupKind != nil ? Color.white : Color.primary)
-        .background(
-            workspace.activeTool.markupKind != nil ? Color.accentColor : Color.clear,
-            in: RoundedRectangle(cornerRadius: 6)
-        )
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help("Text Markup: \(displayedTool.label)")
         .onChange(of: workspace.activeTool) { _, tool in
             if tool.markupKind != nil { preferredTool = tool }
         }
@@ -258,6 +240,56 @@ struct MarkupToolPicker: View {
         } label: {
             Label(tool.label, systemImage: tool.symbol)
         }
+    }
+}
+
+struct ShapeToolPicker: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+
+    private var isSelected: Bool {
+        workspace.activeTool == .rectangle || workspace.activeTool == .oval
+    }
+
+    var body: some View {
+        Menu {
+            Button {
+                workspace.selectAnnotation(nil)
+                workspace.activeTool = .rectangle
+            } label: {
+                Label("Rectangle", systemImage: "rectangle")
+            }
+            Button {
+                workspace.selectAnnotation(nil)
+                workspace.activeTool = .oval
+            } label: {
+                Label("Ellipse", systemImage: "circle")
+            }
+        } label: {
+            SubtoolMenuLabel(symbol: "square.on.circle", selected: isSelected)
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(isSelected ? workspace.activeTool.label : "Shapes")
+    }
+}
+
+struct SubtoolMenuLabel: View {
+    let symbol: String
+    let selected: Bool
+
+    var body: some View {
+        ZStack(alignment: .bottomTrailing) {
+            Image(systemName: symbol)
+                .frame(width: 24, height: 22)
+            Image(systemName: "chevron.down")
+                .font(.system(size: 5, weight: .bold))
+                .offset(x: 1, y: 1)
+        }
+        .frame(width: 28, height: 22)
+        .foregroundStyle(selected ? Color.white : Color.primary)
+        .background(selected ? Color.accentColor : Color.clear, in: RoundedRectangle(cornerRadius: 6))
+        .contentShape(Rectangle())
     }
 }
 

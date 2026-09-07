@@ -79,7 +79,30 @@ struct FormOverlaySmoke {
             fatalError("Added free text was not saved from the editor.")
         }
 
-        print("Form and free-text smoke test passed.")
+        workspace.activeTool = .rectangle
+        workspace.shapeHasFill = false
+        workspace.lineWidth = 2.5
+        workspace.addAnnotation(
+            at: CGPoint(x: 80, y: 450),
+            on: page,
+            dragPoints: [CGPoint(x: 80, y: 450), CGPoint(x: 260, y: 350)]
+        )
+        guard let shape = workspace.selectedAnnotation,
+              shape.isSubtype(.square),
+              shape.interiorColor == nil,
+              abs((shape.border?.lineWidth ?? 0) - 2.5) < 0.01 else {
+            fatalError("A new shape did not preserve the default transparent fill and stroke width.")
+        }
+        workspace.beginSelectedShapeStrokeChange()
+        workspace.previewSelectedShapeStrokeWidth(7)
+        workspace.endSelectedShapeStrokeChange()
+        workspace.setSelectedShapeFillEnabled(true)
+        guard abs((shape.border?.lineWidth ?? 0) - 7) < 0.01,
+              shape.interiorColor != nil else {
+            fatalError("Selected shape appearance was not editable.")
+        }
+
+        print("Form, free-text, and shape appearance smoke test passed.")
     }
 }
 

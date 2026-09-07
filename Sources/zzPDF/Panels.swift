@@ -144,7 +144,8 @@ struct InspectorPanel: View {
                         .labelsHidden()
                 }
             }
-            if [.draw, .rectangle, .oval, .signature].contains(workspace.activeTool) {
+            if [.draw, .signature].contains(workspace.activeTool) ||
+                ([.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Stroke Width").font(.callout)
@@ -154,6 +155,20 @@ struct InspectorPanel: View {
                     }
                     Slider(value: $workspace.lineWidth, in: 0.5...12)
                 }
+            }
+            if [.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape {
+                Toggle("Fill", isOn: $workspace.shapeHasFill)
+                if workspace.shapeHasFill {
+                    HStack {
+                        Text("Fill Color").font(.callout)
+                        Spacer()
+                        ColorPicker("", selection: $workspace.shapeFillColor, supportsOpacity: true)
+                            .labelsHidden()
+                    }
+                }
+            }
+            if [.rectangle, .oval].contains(workspace.activeTool) && workspace.selectedAnnotationIsShape {
+                selectedShapeControls
             }
             if workspace.activeTool == .signature {
                 HStack {
@@ -204,6 +219,9 @@ struct InspectorPanel: View {
                     Button("Edit Text…") { workspace.beginEditingFreeText(annotation) }
                         .controlSize(.small)
                 }
+                if workspace.selectedAnnotationIsShape {
+                    selectedShapeControls
+                }
             }
             HStack(spacing: 8) {
                 if workspace.hasTextSelection {
@@ -216,6 +234,51 @@ struct InspectorPanel: View {
                 }
             }
         }
+    }
+
+    private var selectedShapeControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Stroke Width").font(.callout)
+                Spacer()
+                Text(String(format: "%.1f pt", workspace.selectedShapeStrokeWidth))
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            }
+            Slider(
+                value: Binding(
+                    get: { workspace.selectedShapeStrokeWidth },
+                    set: { workspace.previewSelectedShapeStrokeWidth($0) }
+                ),
+                in: 0.5...12,
+                onEditingChanged: { editing in
+                    if editing { workspace.beginSelectedShapeStrokeChange() }
+                    else { workspace.endSelectedShapeStrokeChange() }
+                }
+            )
+            Toggle(
+                "Fill",
+                isOn: Binding(
+                    get: { workspace.selectedShapeHasFill },
+                    set: { workspace.setSelectedShapeFillEnabled($0) }
+                )
+            )
+            if workspace.selectedShapeHasFill {
+                HStack {
+                    Text("Fill Color").font(.callout)
+                    Spacer()
+                    ColorPicker(
+                        "",
+                        selection: Binding(
+                            get: { workspace.selectedShapeFillColor },
+                            set: { workspace.setSelectedShapeFillColor($0) }
+                        ),
+                        supportsOpacity: true
+                    )
+                    .labelsHidden()
+                }
+            }
+        }
+        .padding(.vertical, 4)
     }
 
     private var pageControls: some View {

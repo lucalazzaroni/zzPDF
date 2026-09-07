@@ -596,15 +596,18 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
                           width: abs(last.x - first.x), height: abs(last.y - first.y))
         let path = workspace.activeTool == .oval ? NSBezierPath(ovalIn: rect) : NSBezierPath(rect: rect)
-        path.lineWidth = max(workspace.lineWidth, 1.5)
-        path.setLineDash([7, 4], count: 2, phase: 0)
         if workspace.activeTool == .redact {
+            path.lineWidth = max(workspace.lineWidth * scaleFactor, 1.5)
+            path.setLineDash([7, 4], count: 2, phase: 0)
             NSColor.black.withAlphaComponent(0.62).setFill()
             path.fill()
             NSColor.white.withAlphaComponent(0.9).setStroke()
         } else {
-            color.withAlphaComponent(0.16).setFill()
-            path.fill()
+            path.lineWidth = max(workspace.lineWidth * scaleFactor, 0.5)
+            if workspace.shapeHasFill {
+                NSColor(workspace.shapeFillColor).setFill()
+                path.fill()
+            }
             color.setStroke()
         }
         path.stroke()

@@ -99,6 +99,11 @@ final class PDFWorkspace: ObservableObject {
     @Published var pageLayout: PageLayoutMode = .continuous
     @Published var annotationColor: Color = .black
     @Published var lineWidth: Double = 2.5
+    @Published var shapeHasFill = false
+    @Published var shapeFillColor: Color = .black
+    @Published var selectedShapeStrokeWidth: Double = 2.5
+    @Published var selectedShapeHasFill = false
+    @Published var selectedShapeFillColor: Color = .black
     @Published var textToInsert = "Text"
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
@@ -126,6 +131,8 @@ final class PDFWorkspace: ObservableObject {
     private var pendingNewFreeText: PDFAnnotation?
     private var pendingFreeTextWasDirty = false
     private var editingFreeText: PDFAnnotation?
+    private var shapeStrokeBeforeEditing: Double?
+    private var shapeStrokeWasDirty = false
 
     weak var pdfView: InteractivePDFView?
 
@@ -134,6 +141,11 @@ final class PDFWorkspace: ObservableObject {
     var displayName: String { fileURL?.deletingPathExtension().lastPathComponent ?? "Untitled" }
     var nsAnnotationColor: NSColor { NSColor(annotationColor) }
     var hasSignature: Bool { !savedSignature.isEmpty || signatureImage != nil }
+    var selectedAnnotationIsShape: Bool {
+        guard let annotation = selectedAnnotation else { return false }
+        if annotation.contents == "Redaction — export a flattened copy" { return false }
+        return annotation.isSubtype(.square) || annotation.isSubtype(.circle)
+    }
     var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
     var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
 
@@ -416,6 +428,7 @@ final class PDFWorkspace: ObservableObject {
             let rect = normalizedBounds(from: dragPoints, fallback: point, size: CGSize(width: 130, height: 80))
             let item = PDFAnnotation(bounds: rect, forType: tool == .rectangle ? .square : .circle, withProperties: nil)
             item.color = color
+            item.interiorColor = shapeHasFill ? NSColor(shapeFillColor) : nil
             let border = PDFBorder()
             border.lineWidth = lineWidth
             item.border = border
@@ -541,7 +554,75 @@ final class PDFWorkspace: ObservableObject {
             hasTextSelection = false
         }
         selectedAnnotation = annotation
+        if let annotation, annotation.isSubtype(.square) || annotation.isSubtype(.circle) {
+            selectedShapeStrokeWidth = Double(annotation.border?.lineWidth ?? 1)
+            if let fill = annotation.interiorColor {
+                selectedShapeHasFill = true
+                selectedShapeFillColor = Color(nsColor: fill)
+            } else {
+                selectedShapeHasFill = false
+            }
+        }
         pdfView?.refreshInteractionAppearance()
+    }
+
+    func beginSelectedShapeStrokeChange() {
+        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
+        shapeStrokeBeforeEditing = Double(annotation.border?.lineWidth ?? 1)
+        shapeStrokeWasDirty = isDirty
+    }
+
+    func previewSelectedShapeStrokeWidth(_ width: Double) {
+        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
+        applyStrokeWidth(width, to: annotation)
+        selectedShapeStrokeWidth = width
+        isDirty = true
+        pdfView?.needsDisplay = true
+    }
+
+    func endSelectedShapeStrokeChange() {
+        guard let annotation = selectedAnnotation,
+              let oldWidth = shapeStrokeBeforeEditing else { return }
+        let newWidth = selectedShapeStrokeWidth
+        shapeStrokeBeforeEditing = nil
+        guard oldWidth != newWidth else {
+            isDirty = shapeStrokeWasDirty
+            return
+        }
+        let wasDirty = shapeStrokeWasDirty
+        registerEdit(wasDirtyBefore: wasDirty, undo: { self.applyStrokeWidth(oldWidth, to: annotation) }, redo: { self.applyStrokeWidth(newWidth, to: annotation) })
+        changed("Shape stroke updated")
+    }
+
+    func setSelectedShapeFillEnabled(_ enabled: Bool) {
+        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
+        let oldFill = annotation.interiorColor
+        let newFill = enabled ? NSColor(selectedShapeFillColor) : nil
+        guard oldFill != newFill else { return }
+        let wasDirty = isDirty
+        annotation.interiorColor = newFill
+        selectedShapeHasFill = enabled
+        registerEdit(wasDirtyBefore: wasDirty, undo: { annotation.interiorColor = oldFill }, redo: { annotation.interiorColor = newFill })
+        changed("Shape fill updated")
+    }
+
+    func setSelectedShapeFillColor(_ color: Color) {
+        selectedShapeFillColor = color
+        guard selectedAnnotationIsShape, selectedShapeHasFill, let annotation = selectedAnnotation else { return }
+        let oldFill = annotation.interiorColor
+        let newFill = NSColor(color)
+        guard oldFill != newFill else { return }
+        let wasDirty = isDirty
+        annotation.interiorColor = newFill
+        registerEdit(wasDirtyBefore: wasDirty, undo: { annotation.interiorColor = oldFill }, redo: { annotation.interiorColor = newFill })
+        changed("Shape fill color updated")
+    }
+
+    private func applyStrokeWidth(_ width: Double, to annotation: PDFAnnotation) {
+        let border = annotation.border ?? PDFBorder()
+        border.lineWidth = width
+        annotation.border = border
+        pdfView?.needsDisplay = true
     }
 
     func beginEditingSelectedNote() {
