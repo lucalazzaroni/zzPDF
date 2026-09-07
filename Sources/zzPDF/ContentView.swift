@@ -27,6 +27,10 @@ struct ContentView: View {
             NoteEditorSheet()
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.showFreeTextEditor) {
+            FreeTextEditorSheet()
+                .environmentObject(workspace)
+        }
         .onOpenURL { url in
             guard url.pathExtension.lowercased() == "pdf" else { return }
             workspace.load(url)

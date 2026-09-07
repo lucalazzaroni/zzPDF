@@ -131,6 +131,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         image.size = NSSize(width: 22, height: 22)
         return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 19))
     }()
+    private lazy var underlineCursor = markupCursor(symbol: "underline", description: "Underline")
+    private lazy var strikeOutCursor = markupCursor(symbol: "strikethrough", description: "Strike Through")
     private lazy var interactionOverlay: PDFInteractionOverlay = {
         let overlay = PDFInteractionOverlay(frame: bounds)
         overlay.owner = self
@@ -176,7 +178,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     override func resetCursorRects() {
         super.resetCursorRects()
-        guard workspace?.activeTool != .select else { return }
+        guard workspace?.activeTool != .select, workspace?.activeTool != .fillForms else { return }
         let pageCursor = cursorForActiveTool
         for page in visiblePages {
             addCursorRect(convert(page.bounds(for: displayBox), from: page).standardized, cursor: pageCursor)
@@ -222,12 +224,23 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     fileprivate var cursorForActiveTool: NSCursor {
         guard let tool = workspace?.activeTool else { return .arrow }
         switch tool {
-        case .select: return .arrow
+        case .select, .fillForms: return .arrow
         case .highlight: return highlighterCursor
+        case .underline: return underlineCursor
+        case .strikeOut: return strikeOutCursor
         case .text: return .iBeam
         case .draw: return drawingCursor
         case .note, .rectangle, .oval, .redact, .signature: return .crosshair
         }
+    }
+
+    private func markupCursor(symbol: String, description: String) -> NSCursor {
+        guard let symbolImage = NSImage(systemSymbolName: symbol, accessibilityDescription: description) else {
+            return .iBeam
+        }
+        let image = symbolImage.withSymbolConfiguration(.init(pointSize: 18, weight: .semibold)) ?? symbolImage
+        image.size = NSSize(width: 22, height: 22)
+        return NSCursor(image: image, hotSpot: NSPoint(x: 3, y: 19))
     }
 
     fileprivate func cursor(at point: CGPoint) -> NSCursor {
@@ -301,6 +314,12 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             return
         }
 
+        if workspace.activeTool == .fillForms {
+            workspace.selectAnnotation(nil)
+            super.mouseDown(with: event)
+            return
+        }
+
         if workspace.activeTool == .select {
             if let page = page(for: viewPoint, nearest: false) {
                 let pagePoint = convert(viewPoint, to: page)
@@ -320,7 +339,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
                         if annotation.isSubtype(.text) {
                             workspace.beginEditingSelectedNote()
                         } else if annotation.isSubtype(.freeText) {
-                            beginInlineTextEditing(annotation, on: page)
+                            workspace.beginEditingFreeText(annotation)
                         }
                     }
                     beginAnnotationDrag(annotation, on: page, at: viewPoint, mode: nil)
@@ -333,7 +352,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             return
         }
 
-        if workspace.activeTool == .highlight {
+        if workspace.activeTool.markupKind != nil {
             workspace.selectAnnotation(nil)
             super.mouseDown(with: event)
             return
@@ -356,7 +375,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             updateAnnotationDrag(to: convert(event.locationInWindow, from: nil), workspace: workspace)
             return
         }
-        if workspace.activeTool == .highlight {
+        if workspace.activeTool.markupKind != nil {
             super.mouseDragged(with: event)
             return
         }
@@ -376,9 +395,9 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             finishAnnotationDrag(workspace: workspace)
             return
         }
-        if workspace.activeTool == .highlight {
+        if let markupKind = workspace.activeTool.markupKind {
             super.mouseUp(with: event)
-            DispatchQueue.main.async { [weak workspace] in workspace?.addMarkup(.highlight) }
+            DispatchQueue.main.async { [weak workspace] in workspace?.addMarkup(markupKind) }
             return
         }
         guard workspace.activeTool != .select,
@@ -430,6 +449,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     fileprivate func shouldCaptureInteraction(at viewPoint: CGPoint) -> Bool {
         guard let workspace else { return false }
+        if workspace.activeTool == .fillForms { return false }
         if workspace.activeTool != .select { return true }
         if let selected = workspace.selectedAnnotation, let page = selected.page,
            resizeHandle(at: viewPoint, for: selected, on: page) != nil { return true }

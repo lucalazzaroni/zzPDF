@@ -134,7 +134,7 @@ struct InspectorPanel: View {
                 TextField("Text to insert", text: $workspace.textToInsert, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
             }
-            if workspace.activeTool != .select && workspace.activeTool != .highlight && workspace.activeTool != .redact {
+            if ![.select, .fillForms, .highlight, .redact].contains(workspace.activeTool) {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -170,8 +170,11 @@ struct InspectorPanel: View {
 
     private var toolHint: String {
         switch workspace.activeTool {
-        case .select: "Select text, annotations, or fill form fields directly. Double-click a note to edit it."
+        case .select: "Select text and annotations. Double-click a note or added text to edit it."
+        case .fillForms: "Fill text fields, select choices, and toggle checkboxes without annotation handles in the way."
         case .highlight: "Drag across text to highlight it immediately. The tool stays active for the next passage."
+        case .underline: "Drag across text to underline it immediately. The tool stays active for the next passage."
+        case .strikeOut: "Drag across text to strike it out immediately. The tool stays active for the next passage."
         case .note: "Click the page, then type the note immediately."
         case .text: "Click the page to insert the text."
         case .draw: "Drag on the page to draw freehand."
@@ -193,6 +196,10 @@ struct InspectorPanel: View {
                 }
                 if workspace.selectedAnnotation?.isSubtype(.text) == true {
                     Button("Edit Note…") { workspace.beginEditingSelectedNote() }
+                        .controlSize(.small)
+                } else if workspace.selectedAnnotation?.isSubtype(.freeText) == true,
+                          let annotation = workspace.selectedAnnotation {
+                    Button("Edit Text…") { workspace.beginEditingFreeText(annotation) }
                         .controlSize(.small)
                 }
             }
@@ -408,6 +415,40 @@ struct NoteEditorSheet: View {
                 .keyboardShortcut(.cancelAction)
                 Button("Save Note") {
                     workspace.commitSelectedNote()
+                    dismiss()
+                }
+                .keyboardShortcut(.return, modifiers: [.command])
+                .buttonStyle(.borderedProminent)
+            }
+        }
+        .padding(24)
+        .frame(width: 520, height: 320)
+        .interactiveDismissDisabled()
+    }
+}
+
+struct FreeTextEditorSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Edit Text").font(.title2.bold())
+            TextEditor(text: $workspace.freeTextDraftText)
+                .font(.body)
+                .padding(6)
+                .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+            HStack {
+                Text("This text will remain directly on the PDF page.")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") {
+                    workspace.cancelFreeTextEditing()
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+                Button("Save Text") {
+                    workspace.commitFreeTextEditing()
                     dismiss()
                 }
                 .keyboardShortcut(.return, modifiers: [.command])

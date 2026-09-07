@@ -4,7 +4,6 @@ set -euo pipefail
 PROJECT_DIR="${0:A:h}"
 BUILD_DIR="$PROJECT_DIR/work/build"
 CACHE_DIR="$PROJECT_DIR/work/cache"
-TEMP_HOME="$PROJECT_DIR/work/home"
 OUTPUT_DIR="$PROJECT_DIR/outputs"
 APP_DIR="$OUTPUT_DIR/zzPDF.app"
 ZIP_PATH="$OUTPUT_DIR/zzPDF-macOS.zip"
@@ -19,9 +18,8 @@ else
     SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)"
 fi
 
-mkdir -p "$BUILD_DIR" "$CACHE_DIR" "$TEMP_HOME" "$OUTPUT_DIR"
+mkdir -p "$BUILD_DIR" "$CACHE_DIR" "$OUTPUT_DIR"
 
-HOME="$TEMP_HOME" \
 CLANG_MODULE_CACHE_PATH="$CACHE_DIR" \
 SDKROOT="$SDK_PATH" \
 swift build -c release --disable-sandbox --scratch-path "$BUILD_DIR"

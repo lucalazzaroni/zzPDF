@@ -4,13 +4,16 @@ import SwiftUI
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
-    case select, highlight, note, text, draw, rectangle, oval, redact, signature
+    case select, fillForms, highlight, underline, strikeOut, note, text, draw, rectangle, oval, redact, signature
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .select: "Select"
+        case .fillForms: "Fill Forms"
         case .highlight: "Highlight"
+        case .underline: "Underline"
+        case .strikeOut: "Strike Through"
         case .note: "Note"
         case .text: "Text"
         case .draw: "Draw"
@@ -23,7 +26,10 @@ enum CanvasTool: String, CaseIterable, Identifiable {
     var symbol: String {
         switch self {
         case .select: "cursorarrow"
+        case .fillForms: "list.bullet.rectangle"
         case .highlight: "highlighter"
+        case .underline: "underline"
+        case .strikeOut: "strikethrough"
         case .note: "note.text"
         case .text: "textformat"
         case .draw: "pencil.tip"
@@ -31,6 +37,15 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .oval: "circle"
         case .redact: "eye.slash"
         case .signature: "signature"
+        }
+    }
+
+    var markupKind: MarkupKind? {
+        switch self {
+        case .highlight: .highlight
+        case .underline: .underline
+        case .strikeOut: .strikeOut
+        default: nil
         }
     }
 }
@@ -93,8 +108,10 @@ final class PDFWorkspace: ObservableObject {
     @Published var showPasswordExport = false
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
+    @Published var showFreeTextEditor = false
     @Published var ocrText = ""
     @Published var annotationDraftText = ""
+    @Published var freeTextDraftText = ""
     @Published var statusMessage = "Open a PDF to get started"
     @Published var isDirty = false
     @Published var savedSignature: [[CGPoint]] = []
@@ -107,6 +124,7 @@ final class PDFWorkspace: ObservableObject {
     private var pendingNoteWasDirty = false
     private var pendingNewFreeText: PDFAnnotation?
     private var pendingFreeTextWasDirty = false
+    private var editingFreeText: PDFAnnotation?
 
     weak var pdfView: InteractivePDFView?
 
@@ -378,7 +396,7 @@ final class PDFWorkspace: ObservableObject {
         let annotation: PDFAnnotation?
         let tool = activeTool
         switch tool {
-        case .select, .highlight:
+        case .select, .fillForms, .highlight, .underline, .strikeOut:
             return
         case .note:
             let item = NoteMarkerAnnotation(bounds: CGRect(x: point.x - 14, y: point.y - 14, width: 28, height: 28))
@@ -432,9 +450,7 @@ final class PDFWorkspace: ObservableObject {
             } else if tool == .text {
                 pendingNewFreeText = annotation
                 pendingFreeTextWasDirty = wasDirty
-                DispatchQueue.main.async { [weak self] in
-                    self?.pdfView?.beginInlineTextEditing(annotation, on: page)
-                }
+                beginEditingFreeText(annotation)
             } else {
                 registerEdit(wasDirtyBefore: wasDirty, undo: {
                     page.removeAnnotation(annotation)
@@ -585,6 +601,33 @@ final class PDFWorkspace: ObservableObject {
         changed(isWidget ? "Form field updated" : "Text updated")
     }
 
+    func beginEditingFreeText(_ annotation: PDFAnnotation) {
+        guard annotation.isSubtype(.freeText) else { return }
+        editingFreeText = annotation
+        freeTextDraftText = annotation.contents ?? ""
+        showFreeTextEditor = true
+    }
+
+    func commitFreeTextEditing() {
+        guard let annotation = editingFreeText else {
+            showFreeTextEditor = false
+            return
+        }
+        updateEditableText(in: annotation, to: freeTextDraftText)
+        editingFreeText = nil
+        showFreeTextEditor = false
+        if activeTool == .text { statusMessage = "Text saved — click to add another" }
+    }
+
+    func cancelFreeTextEditing() {
+        let annotation = editingFreeText
+        editingFreeText = nil
+        showFreeTextEditor = false
+        if let annotation, pendingNewFreeText === annotation {
+            cancelEditableText(annotation)
+        }
+    }
+
     func updateButtonField(_ annotation: PDFAnnotation, to state: PDFWidgetCellState) {
         let oldState = annotation.buttonWidgetState
         guard oldState != state else { return }
@@ -658,8 +701,8 @@ final class PDFWorkspace: ObservableObject {
             return
         }
         if let annotation = pendingNewFreeText {
-            pdfView?.cancelInlineTextEditing()
-            if pendingNewFreeText != nil { cancelEditableText(annotation) }
+            editingFreeText = annotation
+            cancelFreeTextEditing()
             return
         }
         activeTool = .select

@@ -35,6 +35,7 @@ struct FormOverlaySmoke {
         let pdfView = InteractivePDFView(frame: CGRect(x: 0, y: 0, width: 650, height: 850))
         workspace.pdfDocument = document
         workspace.pdfView = pdfView
+        workspace.activeTool = .fillForms
         pdfView.workspace = workspace
         pdfView.document = document
         pdfView.layoutDocumentView()
@@ -45,31 +46,39 @@ struct FormOverlaySmoke {
         overlay.refresh()
         overlay.layoutSubtreeIfNeeded()
 
-        let addedText = PDFAnnotation(
-            bounds: CGRect(x: 60, y: 520, width: 240, height: 32),
-            forType: .freeText,
-            withProperties: nil
-        )
-        addedText.contents = "Text"
-        page.addAnnotation(addedText)
-        overlay.beginEditing(addedText)
-        overlay.layoutSubtreeIfNeeded()
-
         guard let textField = overlay.subviews.compactMap({ $0 as? PDFOverlayTextField }).first,
-              let addedTextEditor = overlay.subviews.compactMap({ $0 as? PDFOverlayTextField }).first(where: { $0.isFreeTextEditor }),
               let checkButton = overlay.subviews.compactMap({ $0 as? PDFOverlayButton }).first,
               !textField.isHidden,
               textField.isEditable,
               textField.isEnabled,
-              addedTextEditor.isEditable,
-              addedTextEditor.isSelectable,
               !checkButton.isHidden,
               checkButton.isEnabled,
               overlay.hitTest(textField.frame.center) === textField else {
             fatalError("PDF form overlay controls are not visible and interactive.")
         }
 
-        print("Form overlay smoke test passed.")
+        workspace.activeTool = .select
+        overlay.refresh()
+        guard textField.isHidden, checkButton.isHidden else {
+            fatalError("PDF form controls should only be visible in Fill Forms mode.")
+        }
+
+        workspace.activeTool = .text
+        workspace.textToInsert = "Text"
+        workspace.addAnnotation(at: CGPoint(x: 80, y: 520), on: page)
+        guard workspace.showFreeTextEditor,
+              workspace.freeTextDraftText == "Text",
+              let addedText = workspace.selectedAnnotation,
+              addedText.isSubtype(.freeText) else {
+            fatalError("Added free text did not open in the editor.")
+        }
+        workspace.freeTextDraftText = "Editable text"
+        workspace.commitFreeTextEditing()
+        guard !workspace.showFreeTextEditor, addedText.contents == "Editable text" else {
+            fatalError("Added free text was not saved from the editor.")
+        }
+
+        print("Form and free-text smoke test passed.")
     }
 }
 

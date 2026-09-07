@@ -31,7 +31,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
     func refresh() {
         guard let owner else { return }
         if formViews.isEmpty { buildFormViews() }
-        let showForms = owner.workspace?.activeTool == .select
+        let showForms = owner.workspace?.activeTool == .fillForms
         for view in formViews { view.isHidden = !showForms }
         synchronizeValues()
         updateFrames()
