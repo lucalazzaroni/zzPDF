@@ -7,7 +7,7 @@ A private, offline, native PDF editor for macOS, built with SwiftUI and PDFKit.
 
 zzPDF lets you read, organize, fill, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
 
-The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.5.3.zip`](dist/zzPDF-macOS-arm64-v0.5.3.zip).
+The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.5.4.zip`](dist/zzPDF-macOS-arm64-v0.5.4.zip).
 
 ## Features
 
@@ -20,7 +20,7 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.5.3.
 - Immediate note editor after placing a note; `Command-Return` saves and keeps the Note tool active, while `Escape` removes a new unsaved note.
 - Fast in-place undo and redo with `Command-Z` and `Command-Y`, without reloading the document or losing the current page.
 - `Escape` returns any annotation tool to Select mode.
-- Persistent, clickable PDF form-field overlays in Select mode, with a dedicated inline editor for text fields.
+- Persistent, clickable PDF form controls hosted by PDFKit page overlays in Select mode, including text fields, checkboxes, radio buttons, and choices.
 - Black as the default color for text, freehand ink, shapes, and graphic signatures.
 - Page reordering, rotation, duplication, deletion, cropping, and extraction.
 - PDF merging and PDF creation from image files.
@@ -72,6 +72,7 @@ AppResources/        Info.plist and app icon
 build-app.sh         release build and app packaging
 scripts/notarize.sh  notarization of a Developer ID build
 Tests/InkResizeSmoke/ standalone Ink path-resize regression check
+Tests/FormOverlaySmoke/ standalone interactive form-overlay regression check
 ```
 
 ## Project Status

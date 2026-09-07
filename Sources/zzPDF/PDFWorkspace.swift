@@ -522,7 +522,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func beginEditingSelectedNote() {
-        guard let annotation = selectedAnnotation, annotation.type == PDFAnnotationSubtype.text.rawValue else { return }
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.text) else { return }
         annotationDraftText = annotation.contents ?? ""
         noteOriginalText = annotationDraftText
         showNoteEditor = true
@@ -565,7 +565,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func updateEditableText(in annotation: PDFAnnotation, to value: String) {
-        let isWidget = annotation.type == PDFAnnotationSubtype.widget.rawValue
+        let isWidget = annotation.isSubtype(.widget)
         let oldValue = isWidget ? (annotation.widgetStringValue ?? "") : (annotation.contents ?? "")
         let apply: (String) -> Void = { text in
             if isWidget { annotation.widgetStringValue = text } else { annotation.contents = text }
@@ -583,6 +583,19 @@ final class PDFWorkspace: ObservableObject {
         apply(value)
         registerEdit(wasDirtyBefore: wasDirty, undo: { apply(oldValue) }, redo: { apply(value) })
         changed(isWidget ? "Form field updated" : "Text updated")
+    }
+
+    func updateButtonField(_ annotation: PDFAnnotation, to state: PDFWidgetCellState) {
+        let oldState = annotation.buttonWidgetState
+        guard oldState != state else { return }
+        let wasDirty = isDirty
+        annotation.buttonWidgetState = state
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { annotation.buttonWidgetState = oldState },
+            redo: { annotation.buttonWidgetState = state }
+        )
+        changed("Form control updated")
     }
 
     func cancelEditableText(_ annotation: PDFAnnotation) {
@@ -809,7 +822,7 @@ private func applyGeometry(to annotation: PDFAnnotation, bounds: CGRect, paths: 
         return
     }
     annotation.bounds = bounds
-    guard annotation.type == PDFAnnotationSubtype.ink.rawValue else { return }
+    guard annotation.isSubtype(.ink) else { return }
     for path in annotation.paths ?? [] { annotation.remove(path) }
     for path in paths { if let copy = path.copy() as? NSBezierPath { annotation.add(copy) } }
 }

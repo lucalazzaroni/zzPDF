@@ -191,7 +191,7 @@ struct InspectorPanel: View {
                         .font(.callout)
                     Spacer()
                 }
-                if workspace.selectedAnnotation?.type == PDFAnnotationSubtype.text.rawValue {
+                if workspace.selectedAnnotation?.isSubtype(.text) == true {
                     Button("Edit Note…") { workspace.beginEditingSelectedNote() }
                         .controlSize(.small)
                 }
