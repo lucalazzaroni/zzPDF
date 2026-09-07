@@ -67,9 +67,10 @@ struct FormOverlaySmoke {
         workspace.textToInsert = "Text"
         workspace.addAnnotation(at: CGPoint(x: 80, y: 520), on: page)
         guard workspace.showFreeTextEditor,
-              workspace.freeTextDraftText == "Text",
+              workspace.freeTextDraftText.isEmpty,
               let addedText = workspace.selectedAnnotation,
-              addedText.isSubtype(.freeText) else {
+              addedText.isSubtype(.freeText),
+              addedText.contents == "Text" else {
             fatalError("Added free text did not open in the editor.")
         }
         workspace.freeTextDraftText = "Editable text"

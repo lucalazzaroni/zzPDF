@@ -29,6 +29,12 @@ struct PDFCanvas: NSViewRepresentable {
             name: .PDFViewAnnotationHit,
             object: view
         )
+        NotificationCenter.default.addObserver(
+            context.coordinator,
+            selector: #selector(Coordinator.selectionChanged(_:)),
+            name: .PDFViewSelectionChanged,
+            object: view
+        )
         for name in [Notification.Name.PDFViewVisiblePagesChanged, .PDFViewScaleChanged, .PDFViewDisplayModeChanged] {
             NotificationCenter.default.addObserver(
                 context.coordinator,
@@ -71,6 +77,12 @@ struct PDFCanvas: NSViewRepresentable {
             let annotation = notification.userInfo?["PDFAnnotationHit"] as? PDFAnnotation
             guard annotation?.isSubtype(.widget) != true else { return }
             workspace.selectAnnotation(annotation)
+        }
+
+        @objc func selectionChanged(_ notification: Notification) {
+            guard let workspace, let view = notification.object as? PDFView else { return }
+            let text = view.currentSelection?.string?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            workspace.hasTextSelection = !text.isEmpty
         }
 
         @objc func appearanceChanged(_ notification: Notification) {

@@ -101,8 +101,10 @@ struct InspectorPanel: View {
                 inspectorHeader
                 Divider()
                 activeToolControls
-                Divider()
-                markupControls
+                if workspace.activeTool == .select && (workspace.hasTextSelection || workspace.selectedAnnotation != nil) {
+                    Divider()
+                    markupControls
+                }
                 Divider()
                 pageControls
                 Divider()
@@ -204,10 +206,14 @@ struct InspectorPanel: View {
                 }
             }
             HStack(spacing: 8) {
-                InspectorIconButton(icon: "highlighter", help: "Highlight") { workspace.addMarkup(.highlight) }
-                InspectorIconButton(icon: "underline", help: "Underline") { workspace.addMarkup(.underline) }
-                InspectorIconButton(icon: "strikethrough", help: "Strike Through") { workspace.addMarkup(.strikeOut) }
-                InspectorIconButton(icon: "trash", help: "Remove Annotation") { workspace.removeSelectedAnnotation() }
+                if workspace.hasTextSelection {
+                    InspectorIconButton(icon: "highlighter", help: "Highlight") { workspace.addMarkup(.highlight) }
+                    InspectorIconButton(icon: "underline", help: "Underline") { workspace.addMarkup(.underline) }
+                    InspectorIconButton(icon: "strikethrough", help: "Strike Through") { workspace.addMarkup(.strikeOut) }
+                }
+                if workspace.selectedAnnotation != nil {
+                    InspectorIconButton(icon: "trash", help: "Remove Annotation") { workspace.removeSelectedAnnotation() }
+                }
             }
         }
     }
@@ -430,6 +436,7 @@ struct NoteEditorSheet: View {
 struct FreeTextEditorSheet: View {
     @EnvironmentObject private var workspace: PDFWorkspace
     @Environment(\.dismiss) private var dismiss
+    @FocusState private var editorFocused: Bool
 
     var body: some View {
         VStack(alignment: .leading, spacing: 14) {
@@ -438,6 +445,7 @@ struct FreeTextEditorSheet: View {
                 .font(.body)
                 .padding(6)
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
+                .focused($editorFocused)
             HStack {
                 Text("This text will remain directly on the PDF page.")
                     .font(.caption).foregroundStyle(.secondary)
@@ -458,5 +466,6 @@ struct FreeTextEditorSheet: View {
         .padding(24)
         .frame(width: 520, height: 320)
         .interactiveDismissDisabled()
+        .onAppear { editorFocused = true }
     }
 }

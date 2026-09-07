@@ -182,22 +182,82 @@ struct ToolPicker: View {
     var body: some View {
         HStack(spacing: 2) {
             ForEach(CanvasTool.allCases) { tool in
-                Button {
-                    if tool == .signature && !workspace.hasSignature {
-                        workspace.showSignaturePad = true
+                if tool == .highlight {
+                    MarkupToolPicker()
+                } else if tool != .underline && tool != .strikeOut {
+                    Button {
+                        if tool == .signature && !workspace.hasSignature {
+                            workspace.showSignaturePad = true
+                        }
+                        workspace.activeTool = tool
+                    } label: {
+                        Image(systemName: tool.symbol)
+                            .frame(width: 24, height: 22)
+                            .contentShape(Rectangle())
                     }
-                    workspace.activeTool = tool
-                } label: {
-                    Image(systemName: tool.symbol)
-                        .frame(width: 24, height: 22)
-                        .contentShape(Rectangle())
+                    .buttonStyle(ToolButtonStyle(selected: workspace.activeTool == tool))
+                    .help(tool.label)
                 }
-                .buttonStyle(ToolButtonStyle(selected: workspace.activeTool == tool))
-                .help(tool.label)
             }
         }
         .padding(3)
         .background(.quaternary.opacity(0.7), in: RoundedRectangle(cornerRadius: 8))
+    }
+}
+
+struct MarkupToolPicker: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @State private var preferredTool: CanvasTool = .highlight
+
+    private var displayedTool: CanvasTool {
+        workspace.activeTool.markupKind == nil ? preferredTool : workspace.activeTool
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            Button {
+                workspace.activeTool = preferredTool
+            } label: {
+                Image(systemName: displayedTool.symbol)
+                    .frame(width: 24, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .buttonStyle(.plain)
+            .help(displayedTool.label)
+
+            Menu {
+                markupChoice(.highlight)
+                markupChoice(.underline)
+                markupChoice(.strikeOut)
+            } label: {
+                Image(systemName: "chevron.down")
+                    .font(.system(size: 8, weight: .bold))
+                    .frame(width: 12, height: 22)
+                    .contentShape(Rectangle())
+            }
+            .menuStyle(.borderlessButton)
+            .menuIndicator(.hidden)
+            .fixedSize()
+            .help("Choose Text Markup Tool")
+        }
+        .foregroundStyle(workspace.activeTool.markupKind != nil ? Color.white : Color.primary)
+        .background(
+            workspace.activeTool.markupKind != nil ? Color.accentColor : Color.clear,
+            in: RoundedRectangle(cornerRadius: 6)
+        )
+        .onChange(of: workspace.activeTool) { _, tool in
+            if tool.markupKind != nil { preferredTool = tool }
+        }
+    }
+
+    @ViewBuilder
+    private func markupChoice(_ tool: CanvasTool) -> some View {
+        Button {
+            preferredTool = tool
+            workspace.activeTool = tool
+        } label: {
+            Label(tool.label, systemImage: tool.symbol)
+        }
     }
 }
 

@@ -94,6 +94,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
     @Published var selectedAnnotation: PDFAnnotation?
+    @Published var hasTextSelection = false
     @Published var activeTool: CanvasTool = .select
     @Published var pageLayout: PageLayoutMode = .continuous
     @Published var annotationColor: Color = .black
@@ -161,6 +162,7 @@ final class PDFWorkspace: ObservableObject {
         fileURL = url
         currentPageIndex = 0
         selectedAnnotation = nil
+        hasTextSelection = false
         pendingNewNote = nil
         pendingNewFreeText = nil
         undoActions.removeAll()
@@ -388,6 +390,7 @@ final class PDFWorkspace: ObservableObject {
             for (page, annotation) in additions { page.addAnnotation(annotation) }
         })
         pdfView?.clearSelection()
+        hasTextSelection = false
         changed("Annotation added")
     }
 
@@ -533,6 +536,10 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func selectAnnotation(_ annotation: PDFAnnotation?) {
+        if annotation != nil {
+            pdfView?.clearSelection()
+            hasTextSelection = false
+        }
         selectedAnnotation = annotation
         pdfView?.refreshInteractionAppearance()
     }
@@ -604,7 +611,7 @@ final class PDFWorkspace: ObservableObject {
     func beginEditingFreeText(_ annotation: PDFAnnotation) {
         guard annotation.isSubtype(.freeText) else { return }
         editingFreeText = annotation
-        freeTextDraftText = annotation.contents ?? ""
+        freeTextDraftText = pendingNewFreeText === annotation ? "" : (annotation.contents ?? "")
         showFreeTextEditor = true
     }
 
