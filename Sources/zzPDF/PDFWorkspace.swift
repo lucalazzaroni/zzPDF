@@ -105,6 +105,8 @@ final class PDFWorkspace: ObservableObject {
     @Published var selectedShapeHasFill = false
     @Published var selectedShapeFillColor: Color = .black
     @Published var textToInsert = "Text"
+    @Published var textFontSize: Double = 15
+    @Published var selectedTextFontSize: Double = 15
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
@@ -119,6 +121,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var ocrText = ""
     @Published var annotationDraftText = ""
     @Published var freeTextDraftText = ""
+    @Published var freeTextDraftFontSize: Double = 15
     @Published var statusMessage = "Open a PDF to get started"
     @Published var isDirty = false
     @Published var savedSignature: [[CGPoint]] = []
@@ -134,6 +137,8 @@ final class PDFWorkspace: ObservableObject {
     private var editingFreeText: PDFAnnotation?
     private var shapeStrokeBeforeEditing: Double?
     private var shapeStrokeWasDirty = false
+    private var textSizeBeforeEditing: Double?
+    private var textSizeWasDirty = false
 
     weak var pdfView: InteractivePDFView?
 
@@ -146,6 +151,9 @@ final class PDFWorkspace: ObservableObject {
         guard let annotation = selectedAnnotation else { return false }
         if annotation.contents == "Redaction — export a flattened copy" { return false }
         return annotation.isSubtype(.square) || annotation.isSubtype(.circle)
+    }
+    var selectedAnnotationIsFreeText: Bool {
+        selectedAnnotation?.isSubtype(.freeText) == true
     }
     var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
     var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
@@ -425,7 +433,7 @@ final class PDFWorkspace: ObservableObject {
                 withProperties: nil
             )
             item.contents = textToInsert
-            item.font = .systemFont(ofSize: 15)
+            item.font = .systemFont(ofSize: textFontSize)
             item.fontColor = color
             item.color = .clear
             annotation = item
@@ -572,6 +580,7 @@ final class PDFWorkspace: ObservableObject {
         }
         selectedAnnotation = annotation
         synchronizeSelectedShapeAppearance()
+        synchronizeSelectedTextAppearance()
         pdfView?.refreshInteractionAppearance()
     }
 
@@ -583,6 +592,54 @@ final class PDFWorkspace: ObservableObject {
             selectedShapeFillColor = Color(nsColor: fill)
         } else {
             selectedShapeHasFill = false
+        }
+    }
+
+    private func synchronizeSelectedTextAppearance() {
+        guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
+        selectedTextFontSize = Double(annotation.font?.pointSize ?? 15)
+    }
+
+    func beginSelectedTextSizeChange() {
+        guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
+        textSizeBeforeEditing = Double(annotation.font?.pointSize ?? 15)
+        textSizeWasDirty = isDirty
+    }
+
+    func previewSelectedTextFontSize(_ size: Double) {
+        guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
+        applyFontSize(size, to: annotation)
+        selectedTextFontSize = size
+        isDirty = true
+        pdfView?.needsDisplay = true
+        pdfView?.refreshInteractionAppearance()
+    }
+
+    func endSelectedTextSizeChange() {
+        guard let annotation = selectedAnnotation,
+              annotation.isSubtype(.freeText),
+              let oldSize = textSizeBeforeEditing else { return }
+        let newSize = selectedTextFontSize
+        textSizeBeforeEditing = nil
+        guard oldSize != newSize else {
+            isDirty = textSizeWasDirty
+            return
+        }
+        let wasDirty = textSizeWasDirty
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { self.applyFontSize(oldSize, to: annotation) },
+            redo: { self.applyFontSize(newSize, to: annotation) }
+        )
+        changed("Text size updated")
+    }
+
+    private func applyFontSize(_ size: Double, to annotation: PDFAnnotation) {
+        let currentFont = annotation.font ?? .systemFont(ofSize: size)
+        if currentFont.fontName.hasPrefix(".") {
+            annotation.font = .systemFont(ofSize: size)
+        } else {
+            annotation.font = NSFontManager.shared.convert(currentFont, toSize: size)
         }
     }
 
@@ -713,6 +770,7 @@ final class PDFWorkspace: ObservableObject {
         guard annotation.isSubtype(.freeText) else { return }
         editingFreeText = annotation
         freeTextDraftText = pendingNewFreeText === annotation ? "" : (annotation.contents ?? "")
+        freeTextDraftFontSize = Double(annotation.font?.pointSize ?? 15)
         showFreeTextEditor = true
     }
 
@@ -721,10 +779,42 @@ final class PDFWorkspace: ObservableObject {
             showFreeTextEditor = false
             return
         }
-        updateEditableText(in: annotation, to: freeTextDraftText)
+        commitFreeText(annotation, text: freeTextDraftText, fontSize: freeTextDraftFontSize)
         editingFreeText = nil
         showFreeTextEditor = false
         if activeTool == .text { statusMessage = "Text saved — click to add another" }
+    }
+
+    private func commitFreeText(_ annotation: PDFAnnotation, text: String, fontSize: Double) {
+        let oldText = annotation.contents ?? ""
+        let oldFontSize = Double(annotation.font?.pointSize ?? 15)
+        let apply: (String, Double) -> Void = { newText, newFontSize in
+            annotation.contents = newText
+            self.applyFontSize(newFontSize, to: annotation)
+        }
+        if pendingNewFreeText === annotation, let page = annotation.page {
+            apply(text, fontSize)
+            selectedTextFontSize = fontSize
+            let wasDirty = pendingFreeTextWasDirty
+            registerEdit(
+                wasDirtyBefore: wasDirty,
+                undo: { page.removeAnnotation(annotation) },
+                redo: { page.addAnnotation(annotation) }
+            )
+            pendingNewFreeText = nil
+            changed("Text added")
+            return
+        }
+        guard oldText != text || oldFontSize != fontSize else { return }
+        let wasDirty = isDirty
+        apply(text, fontSize)
+        selectedTextFontSize = fontSize
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { apply(oldText, oldFontSize) },
+            redo: { apply(text, fontSize) }
+        )
+        changed("Text updated")
     }
 
     func cancelFreeTextEditing() {
@@ -936,6 +1026,7 @@ final class PDFWorkspace: ObservableObject {
         }
         statusMessage = message
         synchronizeSelectedShapeAppearance()
+        synchronizeSelectedTextAppearance()
         pdfView?.needsDisplay = true
         pdfView?.refreshInteractionAppearance()
         objectWillChange.send()

@@ -65,18 +65,40 @@ struct FormOverlaySmoke {
 
         workspace.activeTool = .text
         workspace.textToInsert = "Text"
+        workspace.textFontSize = 22
         workspace.addAnnotation(at: CGPoint(x: 80, y: 520), on: page)
         guard workspace.showFreeTextEditor,
               workspace.freeTextDraftText.isEmpty,
               let addedText = workspace.selectedAnnotation,
               addedText.isSubtype(.freeText),
-              addedText.contents == "Text" else {
+              addedText.contents == "Text",
+              abs((addedText.font?.pointSize ?? 0) - 22) < 0.01 else {
             fatalError("Added free text did not open in the editor.")
         }
         workspace.freeTextDraftText = "Editable text"
+        workspace.freeTextDraftFontSize = 28
         workspace.commitFreeTextEditing()
-        guard !workspace.showFreeTextEditor, addedText.contents == "Editable text" else {
+        guard !workspace.showFreeTextEditor,
+              addedText.contents == "Editable text",
+              abs((addedText.font?.pointSize ?? 0) - 28) < 0.01 else {
             fatalError("Added free text was not saved from the editor.")
+        }
+
+        workspace.beginSelectedTextSizeChange()
+        workspace.previewSelectedTextFontSize(34)
+        workspace.endSelectedTextSizeChange()
+        guard abs((addedText.font?.pointSize ?? 0) - 34) < 0.01 else {
+            fatalError("Selected free text size was not editable.")
+        }
+        workspace.undo()
+        guard abs((addedText.font?.pointSize ?? 0) - 28) < 0.01,
+              abs(workspace.selectedTextFontSize - 28) < 0.01 else {
+            fatalError("Undo did not synchronize the selected text size control.")
+        }
+        workspace.redo()
+        guard abs((addedText.font?.pointSize ?? 0) - 34) < 0.01,
+              abs(workspace.selectedTextFontSize - 34) < 0.01 else {
+            fatalError("Redo did not synchronize the selected text size control.")
         }
 
         workspace.activeTool = .rectangle

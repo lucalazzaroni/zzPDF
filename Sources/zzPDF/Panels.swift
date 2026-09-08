@@ -135,6 +135,11 @@ struct InspectorPanel: View {
             if workspace.activeTool == .text {
                 TextField("Text to insert", text: $workspace.textToInsert, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
+                if workspace.selectedAnnotationIsFreeText {
+                    selectedTextSizeControls
+                } else {
+                    newTextSizeControls
+                }
             }
             if ![.select, .fillForms, .highlight, .redact].contains(workspace.activeTool) {
                 HStack {
@@ -218,6 +223,7 @@ struct InspectorPanel: View {
                           let annotation = workspace.selectedAnnotation {
                     Button("Edit Text…") { workspace.beginEditingFreeText(annotation) }
                         .controlSize(.small)
+                    selectedTextSizeControls
                 }
                 if workspace.selectedAnnotationIsShape {
                     selectedShapeControls
@@ -233,6 +239,41 @@ struct InspectorPanel: View {
                     InspectorIconButton(icon: "trash", help: "Remove Annotation") { workspace.removeSelectedAnnotation() }
                 }
             }
+        }
+    }
+
+    private var newTextSizeControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            textSizeHeader(workspace.textFontSize)
+            Slider(value: $workspace.textFontSize, in: 8...72, step: 1)
+        }
+    }
+
+    private var selectedTextSizeControls: some View {
+        VStack(alignment: .leading, spacing: 4) {
+            textSizeHeader(workspace.selectedTextFontSize)
+            Slider(
+                value: Binding(
+                    get: { workspace.selectedTextFontSize },
+                    set: { workspace.previewSelectedTextFontSize($0) }
+                ),
+                in: 8...72,
+                step: 1,
+                onEditingChanged: { editing in
+                    if editing { workspace.beginSelectedTextSizeChange() }
+                    else { workspace.endSelectedTextSizeChange() }
+                }
+            )
+        }
+    }
+
+    private func textSizeHeader(_ size: Double) -> some View {
+        HStack {
+            Text("Text Size").font(.callout)
+            Spacer()
+            Text("\(Int(size.rounded())) pt")
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
         }
     }
 
@@ -505,10 +546,18 @@ struct FreeTextEditorSheet: View {
         VStack(alignment: .leading, spacing: 14) {
             Text("Edit Text").font(.title2.bold())
             TextEditor(text: $workspace.freeTextDraftText)
-                .font(.body)
+                .font(.system(size: workspace.freeTextDraftFontSize))
                 .padding(6)
                 .background(.quaternary.opacity(0.45), in: RoundedRectangle(cornerRadius: 8))
                 .focused($editorFocused)
+            HStack {
+                Text("Text Size")
+                Slider(value: $workspace.freeTextDraftFontSize, in: 8...72, step: 1)
+                Text("\(Int(workspace.freeTextDraftFontSize.rounded())) pt")
+                    .font(.caption.monospacedDigit())
+                    .foregroundStyle(.secondary)
+                    .frame(width: 42, alignment: .trailing)
+            }
             HStack {
                 Text("This text will remain directly on the PDF page.")
                     .font(.caption).foregroundStyle(.secondary)
