@@ -35,6 +35,11 @@ struct AppCommands: Commands {
                 .keyboardShortcut("y", modifiers: [.command])
                 .disabled(!document.canRedo)
         }
+        CommandGroup(after: .pasteboard) {
+            Divider()
+            Button("Find…") { document.focusSearch() }
+                .keyboardShortcut("f", modifiers: [.command])
+        }
         CommandGroup(after: .saveItem) {
             Button("Save") { document.save() }
                 .keyboardShortcut("s")

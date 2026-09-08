@@ -102,6 +102,54 @@ struct FormOverlaySmoke {
             fatalError("Selected shape appearance was not editable.")
         }
 
+        workspace.undo()
+        guard shape.interiorColor == nil, !workspace.selectedShapeHasFill else {
+            fatalError("Undo did not synchronize the selected shape fill controls.")
+        }
+        workspace.undo()
+        guard abs((shape.border?.lineWidth ?? 0) - 2.5) < 0.01,
+              abs(workspace.selectedShapeStrokeWidth - 2.5) < 0.01 else {
+            fatalError("Undo did not synchronize the selected shape stroke controls.")
+        }
+        workspace.redo()
+        workspace.redo()
+        guard workspace.selectedShapeHasFill,
+              abs(workspace.selectedShapeStrokeWidth - 7) < 0.01 else {
+            fatalError("Redo did not synchronize the selected shape controls.")
+        }
+
+        workspace.activateTool(.fillForms)
+        overlay.refresh()
+        guard workspace.selectedAnnotation == nil,
+              workspace.activeTool == .fillForms,
+              !textField.isHidden,
+              !checkButton.isHidden else {
+            fatalError("Fill Forms did not clear the previous annotation selection.")
+        }
+
+        workspace.activateTool(.text)
+        workspace.addAnnotation(at: CGPoint(x: 595, y: 300), on: page)
+        guard let edgeText = workspace.selectedAnnotation,
+              edgeText.bounds.maxX <= page.bounds(for: .cropBox).maxX,
+              edgeText.bounds.minX >= page.bounds(for: .cropBox).minX else {
+            fatalError("Free text was allowed to extend beyond the page bounds.")
+        }
+        workspace.cancelFreeTextEditing()
+
+        workspace.selectAnnotation(addedText)
+        workspace.beginEditingFreeText(addedText)
+        workspace.statusMessage = "Previous status"
+        workspace.cancelFreeTextEditing()
+        guard addedText.page === page, workspace.statusMessage == "Text editing cancelled" else {
+            fatalError("Cancelling existing free text produced an incorrect state or status.")
+        }
+
+        let searchRequest = workspace.searchFocusRequest
+        workspace.focusSearch()
+        guard workspace.searchFocusRequest == searchRequest + 1 else {
+            fatalError("The Find command did not request search focus.")
+        }
+
         print("Form, free-text, and shape appearance smoke test passed.")
     }
 }

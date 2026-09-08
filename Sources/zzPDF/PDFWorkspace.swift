@@ -108,6 +108,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
+    @Published var searchFocusRequest = 0
     @Published var sidebarVisible = true
     @Published var inspectorVisible = true
     @Published var showSignaturePad = false
@@ -418,7 +419,11 @@ final class PDFWorkspace: ObservableObject {
             item.contents = ""
             annotation = item
         case .text:
-            let item = PDFAnnotation(bounds: CGRect(x: point.x, y: point.y - 20, width: 210, height: 34), forType: .freeText, withProperties: nil)
+            let item = PDFAnnotation(
+                bounds: clampedTextBounds(at: point, on: page),
+                forType: .freeText,
+                withProperties: nil
+            )
             item.contents = textToInsert
             item.font = .systemFont(ofSize: 15)
             item.fontColor = color
@@ -484,6 +489,18 @@ final class PDFWorkspace: ObservableObject {
         }
         return CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
                       width: abs(last.x - first.x), height: abs(last.y - first.y))
+    }
+
+    private func clampedTextBounds(at point: CGPoint, on page: PDFPage) -> CGRect {
+        let pageBounds = page.bounds(for: .cropBox)
+        let size = CGSize(width: min(210, pageBounds.width), height: min(34, pageBounds.height))
+        let maximumX = max(pageBounds.minX, pageBounds.maxX - size.width)
+        let maximumY = max(pageBounds.minY, pageBounds.maxY - size.height)
+        let origin = CGPoint(
+            x: min(max(point.x, pageBounds.minX), maximumX),
+            y: min(max(point.y - 20, pageBounds.minY), maximumY)
+        )
+        return CGRect(origin: origin, size: size)
     }
 
     private func makeInkAnnotation(points: [CGPoint], color: NSColor, width: Double) -> PDFAnnotation? {
@@ -554,16 +571,19 @@ final class PDFWorkspace: ObservableObject {
             hasTextSelection = false
         }
         selectedAnnotation = annotation
-        if let annotation, annotation.isSubtype(.square) || annotation.isSubtype(.circle) {
-            selectedShapeStrokeWidth = Double(annotation.border?.lineWidth ?? 1)
-            if let fill = annotation.interiorColor {
-                selectedShapeHasFill = true
-                selectedShapeFillColor = Color(nsColor: fill)
-            } else {
-                selectedShapeHasFill = false
-            }
-        }
+        synchronizeSelectedShapeAppearance()
         pdfView?.refreshInteractionAppearance()
+    }
+
+    private func synchronizeSelectedShapeAppearance() {
+        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
+        selectedShapeStrokeWidth = Double(annotation.border?.lineWidth ?? 1)
+        if let fill = annotation.interiorColor {
+            selectedShapeHasFill = true
+            selectedShapeFillColor = Color(nsColor: fill)
+        } else {
+            selectedShapeHasFill = false
+        }
     }
 
     func beginSelectedShapeStrokeChange() {
@@ -713,6 +733,8 @@ final class PDFWorkspace: ObservableObject {
         showFreeTextEditor = false
         if let annotation, pendingNewFreeText === annotation {
             cancelEditableText(annotation)
+        } else if annotation != nil {
+            statusMessage = "Text editing cancelled"
         }
     }
 
@@ -771,6 +793,10 @@ final class PDFWorkspace: ObservableObject {
         statusMessage = query.isEmpty ? "\(pageCount) pages" : "\(searchResults.count) results"
     }
 
+    func focusSearch() {
+        searchFocusRequest += 1
+    }
+
     func nextSearchResult(direction: Int) {
         guard !searchResults.isEmpty else { return }
         searchIndex = (searchIndex + direction + searchResults.count) % searchResults.count
@@ -796,6 +822,17 @@ final class PDFWorkspace: ObservableObject {
         activeTool = .select
         pdfView?.cancelActiveInteraction()
         statusMessage = "Select tool"
+    }
+
+    func activateTool(_ tool: CanvasTool) {
+        if tool == .select {
+            activateSelectTool()
+            return
+        }
+        selectAnnotation(nil)
+        activeTool = tool
+        pdfView?.cancelActiveInteraction()
+        statusMessage = "\(tool.label) tool"
     }
 
     func fitPage() { pdfView?.autoScales = true }
@@ -898,6 +935,7 @@ final class PDFWorkspace: ObservableObject {
             currentPageIndex = max(0, min(currentPageIndex, document.pageCount - 1))
         }
         statusMessage = message
+        synchronizeSelectedShapeAppearance()
         pdfView?.needsDisplay = true
         pdfView?.refreshInteractionAppearance()
         objectWillChange.send()

@@ -191,7 +191,7 @@ struct ToolPicker: View {
                         if tool == .signature && !workspace.hasSignature {
                             workspace.showSignaturePad = true
                         }
-                        workspace.activeTool = tool
+                        workspace.activateTool(tool)
                     } label: {
                         Image(systemName: tool.symbol)
                             .frame(width: 24, height: 22)
@@ -236,7 +236,7 @@ struct MarkupToolPicker: View {
     private func markupChoice(_ tool: CanvasTool) -> some View {
         Button {
             preferredTool = tool
-            workspace.activeTool = tool
+            workspace.activateTool(tool)
         } label: {
             Label(tool.label, systemImage: tool.symbol)
         }
@@ -253,14 +253,12 @@ struct ShapeToolPicker: View {
     var body: some View {
         Menu {
             Button {
-                workspace.selectAnnotation(nil)
-                workspace.activeTool = .rectangle
+                workspace.activateTool(.rectangle)
             } label: {
                 Label("Rectangle", systemImage: "rectangle")
             }
             Button {
-                workspace.selectAnnotation(nil)
-                workspace.activeTool = .oval
+                workspace.activateTool(.oval)
             } label: {
                 Label("Ellipse", systemImage: "circle")
             }
@@ -328,12 +326,15 @@ struct PageLayoutMenu: View {
 
 struct SearchField: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+
     var body: some View {
         HStack(spacing: 5) {
             Image(systemName: "magnifyingglass").foregroundStyle(.secondary)
-            TextField("Search", text: $workspace.searchText)
-                .textFieldStyle(.plain)
-                .onSubmit { workspace.updateSearch() }
+            FocusableSearchTextField(
+                text: $workspace.searchText,
+                focusRequest: workspace.searchFocusRequest,
+                onSubmit: workspace.updateSearch
+            )
             if !workspace.searchText.isEmpty {
                 Text("\(workspace.searchResults.isEmpty ? 0 : workspace.searchIndex + 1)/\(workspace.searchResults.count)")
                     .font(.caption2).foregroundStyle(.secondary)
@@ -351,5 +352,56 @@ struct SearchField: View {
         .padding(.horizontal, 8)
         .padding(.vertical, 5)
         .background(.quaternary.opacity(0.65), in: RoundedRectangle(cornerRadius: 7))
+    }
+}
+
+struct FocusableSearchTextField: NSViewRepresentable {
+    @Binding var text: String
+    let focusRequest: Int
+    let onSubmit: () -> Void
+
+    func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let field = NSTextField()
+        field.placeholderString = "Search"
+        field.isBordered = false
+        field.drawsBackground = false
+        field.focusRingType = .none
+        field.font = .systemFont(ofSize: NSFont.systemFontSize)
+        field.delegate = context.coordinator
+        field.target = context.coordinator
+        field.action = #selector(Coordinator.submit)
+        return field
+    }
+
+    func updateNSView(_ field: NSTextField, context: Context) {
+        context.coordinator.parent = self
+        if field.stringValue != text { field.stringValue = text }
+        guard focusRequest != context.coordinator.lastFocusRequest else { return }
+        context.coordinator.lastFocusRequest = focusRequest
+        DispatchQueue.main.async { [weak field] in
+            guard let field else { return }
+            field.window?.makeFirstResponder(field)
+            field.currentEditor()?.selectAll(nil)
+        }
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var parent: FocusableSearchTextField
+        var lastFocusRequest = 0
+
+        init(parent: FocusableSearchTextField) {
+            self.parent = parent
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let field = notification.object as? NSTextField else { return }
+            parent.text = field.stringValue
+        }
+
+        @objc func submit() {
+            parent.onSubmit()
+        }
     }
 }
