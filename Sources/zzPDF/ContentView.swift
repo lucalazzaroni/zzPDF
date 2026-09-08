@@ -333,7 +333,7 @@ struct SearchField: View {
             FocusableSearchTextField(
                 text: $workspace.searchText,
                 focusRequest: workspace.searchFocusRequest,
-                onSubmit: workspace.updateSearch
+                onSubmit: workspace.submitSearch
             )
             if !workspace.searchText.isEmpty {
                 Text("\(workspace.searchResults.isEmpty ? 0 : workspace.searchIndex + 1)/\(workspace.searchResults.count)")
@@ -358,7 +358,7 @@ struct SearchField: View {
 struct FocusableSearchTextField: NSViewRepresentable {
     @Binding var text: String
     let focusRequest: Int
-    let onSubmit: () -> Void
+    let onSubmit: (Int) -> Void
 
     func makeCoordinator() -> Coordinator { Coordinator(parent: self) }
 
@@ -401,7 +401,8 @@ struct FocusableSearchTextField: NSViewRepresentable {
         }
 
         @objc func submit() {
-            parent.onSubmit()
+            let direction = NSApp.currentEvent?.modifierFlags.contains(.shift) == true ? -1 : 1
+            parent.onSubmit(direction)
         }
     }
 }

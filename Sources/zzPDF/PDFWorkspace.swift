@@ -139,6 +139,7 @@ final class PDFWorkspace: ObservableObject {
     private var shapeStrokeWasDirty = false
     private var textSizeBeforeEditing: Double?
     private var textSizeWasDirty = false
+    private var activeSearchQuery = ""
 
     weak var pdfView: InteractivePDFView?
 
@@ -189,7 +190,9 @@ final class PDFWorkspace: ObservableObject {
         undoActions.removeAll()
         redoActions.removeAll()
         isDirty = false
+        searchText = ""
         searchResults = []
+        activeSearchQuery = ""
         statusMessage = "\(document.pageCount) pages"
     }
 
@@ -877,10 +880,28 @@ final class PDFWorkspace: ObservableObject {
     func updateSearch() {
         guard let document = pdfDocument else { return }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        activeSearchQuery = query
         searchResults = query.isEmpty ? [] : document.findString(query, withOptions: .caseInsensitive)
         searchIndex = 0
-        if let first = searchResults.first { pdfView?.setCurrentSelection(first, animate: true) }
+        if searchResults.isEmpty {
+            pdfView?.clearSelection()
+        } else {
+            revealSearchResult(at: 0)
+        }
         statusMessage = query.isEmpty ? "\(pageCount) pages" : "\(searchResults.count) results"
+    }
+
+    func submitSearch(direction: Int) {
+        let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
+        if query != activeSearchQuery {
+            updateSearch()
+            if direction < 0, searchResults.count > 1 {
+                searchIndex = searchResults.count - 1
+                revealSearchResult(at: searchIndex)
+            }
+            return
+        }
+        nextSearchResult(direction: direction)
     }
 
     func focusSearch() {
@@ -890,7 +911,17 @@ final class PDFWorkspace: ObservableObject {
     func nextSearchResult(direction: Int) {
         guard !searchResults.isEmpty else { return }
         searchIndex = (searchIndex + direction + searchResults.count) % searchResults.count
-        pdfView?.setCurrentSelection(searchResults[searchIndex], animate: true)
+        revealSearchResult(at: searchIndex)
+    }
+
+    private func revealSearchResult(at index: Int) {
+        guard searchResults.indices.contains(index), let view = pdfView else { return }
+        let selection = searchResults[index]
+        view.setCurrentSelection(selection, animate: true)
+        view.go(to: selection)
+        if let page = selection.pages.first, let document = pdfDocument {
+            currentPageIndex = document.index(for: page)
+        }
     }
 
     func setPageLayout(_ layout: PageLayoutMode) {
