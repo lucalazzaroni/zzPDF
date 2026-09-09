@@ -99,6 +99,11 @@ struct ContentView: View {
             }
             .disabled(!workspace.hasDocument)
             .help("Save")
+            Button { workspace.exportFlattened() } label: {
+                Image(systemName: "square.and.arrow.up")
+            }
+            .disabled(!workspace.hasDocument)
+            .help("Export Flattened Copy")
         }
         ToolbarItem(placement: .principal) {
             if workspace.hasDocument {
