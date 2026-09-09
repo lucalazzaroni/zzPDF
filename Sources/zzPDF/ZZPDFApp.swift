@@ -57,7 +57,7 @@ private struct DocumentWindow: View {
                 }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
-                registry.flushTemporaryRecoveries()
+                registry.prepareForTermination()
             }
     }
 }
@@ -87,6 +87,13 @@ struct AppCommands: Commands {
             Button("Redo") { document?.redo() }
                 .keyboardShortcut("y", modifiers: [.command])
                 .disabled(document?.canRedo != true)
+        }
+        CommandGroup(replacing: .appTermination) {
+            Button("Quit zzPDF") {
+                registry.prepareForTermination()
+                NSApp.terminate(nil)
+            }
+            .keyboardShortcut("q", modifiers: [.command])
         }
         CommandGroup(after: .pasteboard) {
             Divider()

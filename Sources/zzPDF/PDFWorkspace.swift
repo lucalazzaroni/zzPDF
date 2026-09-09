@@ -242,18 +242,32 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func save() {
-        guard let document = pdfDocument else { return }
-        guard let url = fileURL else { saveAs(); return }
+        _ = saveForClosing()
+    }
+
+    @discardableResult
+    func saveForClosing() -> Bool {
+        guard let document = pdfDocument else { return true }
+        guard let url = fileURL else { return saveAsDocument() }
         if document.write(to: url) {
             isDirty = false
             statusMessage = "Saved"
+            return true
         } else {
             presentError("The document could not be saved.")
+            return false
         }
     }
 
     func saveAs() {
-        guard let document = pdfDocument, let url = chooseSaveURL(defaultName: "\(displayName).pdf") else { return }
+        _ = saveAsDocument()
+    }
+
+    @discardableResult
+    private func saveAsDocument() -> Bool {
+        guard let document = pdfDocument,
+              let url = chooseSaveURL(defaultName: "\(displayName).pdf")
+        else { return false }
         if document.write(to: url) {
             fileURL = url
             isDirty = false
@@ -264,8 +278,10 @@ final class PDFWorkspace: ObservableObject {
                 zoom: Double(pdfView?.scaleFactor ?? 0),
                 layout: pageLayout
             )
+            return true
         } else {
             presentError("The document could not be saved.")
+            return false
         }
     }
 
@@ -1266,6 +1282,37 @@ final class PDFWorkspace: ObservableObject {
         if succeeded { statusMessage = "Temporary recovery copy saved" }
     }
 
+    func confirmDeliberateClose() -> Bool {
+        guard isDirty else {
+            discardSessionAfterDeliberateClose()
+            return true
+        }
+
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Do you want to save the changes made to “\(displayName)”?"
+        alert.informativeText = "Your changes will be lost if you don’t save them."
+        alert.addButton(withTitle: "Save")
+        alert.addButton(withTitle: "Don’t Save")
+        alert.addButton(withTitle: "Cancel")
+
+        switch alert.runModal() {
+        case .alertFirstButtonReturn:
+            guard saveForClosing() else { return false }
+            discardSessionAfterDeliberateClose()
+            return true
+        case .alertSecondButtonReturn:
+            discardSessionAfterDeliberateClose()
+            return true
+        default:
+            return false
+        }
+    }
+
+    func prepareForApplicationTermination() {
+        flushTemporaryAutosave()
+    }
+
     private func scheduleTemporaryAutosave() {
         guard preferences.temporaryAutosave, pdfDocument != nil else { return }
         temporaryAutosaveWorkItem?.cancel()
@@ -1280,6 +1327,16 @@ final class PDFWorkspace: ObservableObject {
         temporaryAutosaveWorkItem?.cancel()
         temporaryAutosaveWorkItem = nil
         recoveryStore.discard(recoveryIdentifier)
+    }
+
+    private func discardSessionAfterDeliberateClose() {
+        clearTemporaryAutosave()
+        guard let rememberedURL = preferences.lastDocumentURL else { return }
+        if let fileURL, rememberedURL.standardizedFileURL == fileURL.standardizedFileURL {
+            preferences.forgetLastDocument()
+        } else if fileURL == nil {
+            preferences.forgetLastDocument()
+        }
     }
 
     private func prepareToReplaceCurrentDocument() {

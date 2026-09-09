@@ -110,8 +110,6 @@ struct ContentView: View {
         ToolbarItem(placement: .principal) {
             if workspace.hasDocument {
                 ToolPicker()
-            } else {
-                Text("zzPDF").fontWeight(.semibold)
             }
         }
         ToolbarItemGroup(placement: .primaryAction) {

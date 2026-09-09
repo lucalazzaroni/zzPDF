@@ -23,9 +23,17 @@ final class TemporaryRecoveryStore {
             self.directoryURL = directoryURL
         } else {
             let caches = FileManager.default.urls(for: .cachesDirectory, in: .userDomainMask).first!
-            self.directoryURL = caches
-                .appendingPathComponent("zzPDF", isDirectory: true)
+            let root = caches.appendingPathComponent("zzPDF", isDirectory: true)
+            let bundleIdentifier = Bundle.main.bundleIdentifier ?? "it.lucalazzaroni.zzpdf"
+            self.directoryURL = root
+                .appendingPathComponent(bundleIdentifier, isDirectory: true)
                 .appendingPathComponent("Recovery", isDirectory: true)
+            if bundleIdentifier == "it.lucalazzaroni.zzpdf" {
+                Self.migrateLegacyRecoveryIfNeeded(
+                    from: root.appendingPathComponent("Recovery", isDirectory: true),
+                    to: self.directoryURL
+                )
+            }
         }
     }
 
@@ -124,5 +132,17 @@ final class TemporaryRecoveryStore {
             else { continue }
             discard(record.identifier)
         }
+    }
+
+    private static func migrateLegacyRecoveryIfNeeded(from legacyURL: URL, to destinationURL: URL) {
+        let fileManager = FileManager.default
+        guard fileManager.fileExists(atPath: legacyURL.path),
+              !fileManager.fileExists(atPath: destinationURL.path)
+        else { return }
+        try? fileManager.createDirectory(
+            at: destinationURL.deletingLastPathComponent(),
+            withIntermediateDirectories: true
+        )
+        try? fileManager.moveItem(at: legacyURL, to: destinationURL)
     }
 }

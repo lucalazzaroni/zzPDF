@@ -96,7 +96,7 @@ spctl --assess --type execute --verbose=2 "outputs/zzPDF.app"
 Create a tag that matches `CFBundleShortVersionString` in `AppResources/Info.plist`:
 
 ```bash
-git tag -a v0.7.0 -m "zzPDF 0.7.0"
+git tag -a v0.7.1 -m "zzPDF 0.7.1"
 git push origin main --tags
 ```
 
