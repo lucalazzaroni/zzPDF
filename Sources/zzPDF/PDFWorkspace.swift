@@ -97,22 +97,22 @@ final class PDFWorkspace: ObservableObject {
     @Published var hasTextSelection = false
     @Published var activeTool: CanvasTool = .select
     @Published var pageLayout: PageLayoutMode = .continuous
-    @Published var annotationColor: Color = .black
-    @Published var lineWidth: Double = 2.5
-    @Published var shapeHasFill = false
-    @Published var shapeFillColor: Color = .black
+    @Published var annotationColor: Color = .black { didSet { preferences.annotationColor = annotationColor } }
+    @Published var lineWidth: Double = 2.5 { didSet { preferences.lineWidth = lineWidth } }
+    @Published var shapeHasFill = false { didSet { preferences.shapeHasFill = shapeHasFill } }
+    @Published var shapeFillColor: Color = .black { didSet { preferences.shapeFillColor = shapeFillColor } }
     @Published var selectedShapeStrokeWidth: Double = 2.5
     @Published var selectedShapeHasFill = false
     @Published var selectedShapeFillColor: Color = .black
     @Published var textToInsert = "Text"
-    @Published var textFontSize: Double = 15
+    @Published var textFontSize: Double = 15 { didSet { preferences.textFontSize = textFontSize } }
     @Published var selectedTextFontSize: Double = 15
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
     @Published var searchFocusRequest = 0
-    @Published var sidebarVisible = true
-    @Published var inspectorVisible = true
+    @Published var sidebarVisible = true { didSet { preferences.sidebarVisible = sidebarVisible } }
+    @Published var inspectorVisible = true { didSet { preferences.inspectorVisible = inspectorVisible } }
     @Published var showSignaturePad = false
     @Published var showPasswordExport = false
     @Published var showOCRResult = false
@@ -127,6 +127,8 @@ final class PDFWorkspace: ObservableObject {
     @Published var savedSignature: [[CGPoint]] = []
     @Published var signatureImage: NSImage?
 
+    let preferences: AppPreferences
+
     private var undoActions: [PDFEditAction] = []
     private var redoActions: [PDFEditAction] = []
     private var noteOriginalText: String?
@@ -140,6 +142,10 @@ final class PDFWorkspace: ObservableObject {
     private var textSizeBeforeEditing: Double?
     private var textSizeWasDirty = false
     private var activeSearchQuery = ""
+    private var didAttemptSessionRestore = false
+    private var pendingRestoredPageIndex: Int?
+    private var pendingRestoredZoom: Double?
+    private var restoringViewState = false
 
     weak var pdfView: InteractivePDFView?
 
@@ -159,6 +165,19 @@ final class PDFWorkspace: ObservableObject {
     var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
     var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
 
+    init(preferences: AppPreferences = AppPreferences()) {
+        self.preferences = preferences
+        pageLayout = preferences.defaultPageLayout
+        activeTool = preferences.initialTool
+        sidebarVisible = preferences.sidebarVisible
+        inspectorVisible = preferences.inspectorVisible
+        annotationColor = preferences.annotationColor
+        lineWidth = preferences.lineWidth
+        textFontSize = preferences.textFontSize
+        shapeHasFill = preferences.shapeHasFill
+        shapeFillColor = preferences.shapeFillColor
+    }
+
     func openDocument() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.pdf]
@@ -169,6 +188,10 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func load(_ url: URL) {
+        load(url, rememberSession: true)
+    }
+
+    private func load(_ url: URL, rememberSession: Bool) {
         guard let document = PDFDocument(url: url) else {
             presentError("The document could not be opened.")
             return
@@ -183,6 +206,8 @@ final class PDFWorkspace: ObservableObject {
         pdfDocument = document
         fileURL = url
         currentPageIndex = 0
+        activeTool = preferences.initialTool
+        pageLayout = preferences.defaultPageLayout
         selectedAnnotation = nil
         hasTextSelection = false
         pendingNewNote = nil
@@ -194,6 +219,9 @@ final class PDFWorkspace: ObservableObject {
         searchResults = []
         activeSearchQuery = ""
         statusMessage = "\(document.pageCount) pages"
+        if rememberSession {
+            preferences.rememberDocument(url, pageIndex: 0, zoom: 0, layout: pageLayout)
+        }
     }
 
     func save() {
@@ -213,12 +241,23 @@ final class PDFWorkspace: ObservableObject {
             fileURL = url
             isDirty = false
             statusMessage = "Copy saved"
+            preferences.rememberDocument(
+                url,
+                pageIndex: currentPageIndex,
+                zoom: Double(pdfView?.scaleFactor ?? 0),
+                layout: pageLayout
+            )
         } else {
             presentError("The document could not be saved.")
         }
     }
 
     func exportFlattened() {
+        if preferences.confirmFlattenedExport,
+           !confirmAction(
+               title: "Export Flattened Copy?",
+               message: "Annotations and redactions will be permanently applied to the exported copy."
+           ) { return }
         guard let document = pdfDocument,
               let url = chooseSaveURL(defaultName: "\(displayName)-flattened.pdf") else { return }
         let options: [PDFDocumentWriteOption: Any] = [
@@ -324,6 +363,7 @@ final class PDFWorkspace: ObservableObject {
               let page = document.page(at: index) else { return }
         currentPageIndex = index
         pdfView?.go(to: page)
+        rememberCurrentView()
     }
 
     func moveCurrentPage(by offset: Int) {
@@ -362,6 +402,8 @@ final class PDFWorkspace: ObservableObject {
 
     func deleteCurrentPage() {
         guard let document = pdfDocument, document.pageCount > 0 else { return }
+        if preferences.confirmPageDeletion,
+           !confirmAction(title: "Delete Page?", message: "You can undo this action with Command-Z.") { return }
         guard let page = document.page(at: currentPageIndex) else { return }
         let wasDirty = isDirty
         let index = currentPageIndex
@@ -949,8 +991,10 @@ final class PDFWorkspace: ObservableObject {
 
     func setPageLayout(_ layout: PageLayoutMode) {
         pageLayout = layout
+        preferences.defaultPageLayout = layout
         pdfView?.displayMode = layout.pdfMode
         pdfView?.autoScales = true
+        rememberCurrentView()
     }
 
     func activateSelectTool() {
@@ -979,9 +1023,99 @@ final class PDFWorkspace: ObservableObject {
         statusMessage = "\(tool.label) tool"
     }
 
-    func fitPage() { pdfView?.autoScales = true }
-    func actualSize() { pdfView?.scaleFactor = 1.0 }
-    func zoom(by factor: CGFloat) { pdfView?.scaleFactor = max(0.25, min((pdfView?.scaleFactor ?? 1) * factor, 5)) }
+    func fitPage() {
+        pdfView?.autoScales = true
+        rememberCurrentView()
+    }
+    func actualSize() {
+        pdfView?.scaleFactor = 1.0
+        rememberCurrentView()
+    }
+    func zoom(by factor: CGFloat) {
+        pdfView?.scaleFactor = max(0.25, min((pdfView?.scaleFactor ?? 1) * factor, 5))
+        rememberCurrentView()
+    }
+
+    func restorePreviousDocumentIfNeeded() {
+        guard !didAttemptSessionRestore else { return }
+        didAttemptSessionRestore = true
+        guard preferences.restoreLastDocument, let url = preferences.lastDocumentURL else { return }
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            preferences.forgetLastDocument()
+            return
+        }
+        let restoredPage = preferences.lastPageIndex
+        let restoredZoom = preferences.lastZoom
+        let restoredLayout = preferences.lastPageLayout
+        load(url, rememberSession: false)
+        guard pdfDocument != nil, fileURL == url else { return }
+        pageLayout = restoredLayout
+        currentPageIndex = max(0, min(restoredPage, pageCount - 1))
+        pendingRestoredPageIndex = currentPageIndex
+        pendingRestoredZoom = restoredZoom > 0 ? restoredZoom : nil
+        restoringViewState = true
+        statusMessage = "Previous document restored"
+    }
+
+    func attachPDFView(_ view: InteractivePDFView) {
+        pdfView = view
+    }
+
+    func applyPendingViewRestoration() {
+        guard restoringViewState, let view = pdfView, view.document === pdfDocument else { return }
+        let pageIndex = pendingRestoredPageIndex ?? currentPageIndex
+        let zoom = pendingRestoredZoom
+        pendingRestoredPageIndex = nil
+        pendingRestoredZoom = nil
+        restoringViewState = false
+        guard let page = pdfDocument?.page(at: pageIndex) else { return }
+        DispatchQueue.main.async { [weak self, weak view] in
+            guard let self, let view else { return }
+            view.displayMode = self.pageLayout.pdfMode
+            view.go(to: page)
+            if let zoom {
+                view.autoScales = false
+                view.scaleFactor = max(view.minScaleFactor, min(CGFloat(zoom), view.maxScaleFactor))
+            }
+            self.rememberCurrentView()
+        }
+    }
+
+    func recordCurrentPage(_ index: Int) {
+        currentPageIndex = max(0, min(index, max(0, pageCount - 1)))
+        rememberCurrentView()
+    }
+
+    func recordViewState(from view: PDFView) {
+        guard !restoringViewState else { return }
+        rememberCurrentView(zoom: Double(view.scaleFactor))
+    }
+
+    func refreshPreferenceAppearance() {
+        pdfView?.refreshInteractionAppearance()
+    }
+
+    func applyDefaultPreferences() {
+        sidebarVisible = preferences.sidebarVisible
+        inspectorVisible = preferences.inspectorVisible
+        annotationColor = preferences.annotationColor
+        lineWidth = preferences.lineWidth
+        textFontSize = preferences.textFontSize
+        shapeHasFill = preferences.shapeHasFill
+        shapeFillColor = preferences.shapeFillColor
+        setPageLayout(preferences.defaultPageLayout)
+        refreshPreferenceAppearance()
+    }
+
+    private func rememberCurrentView(zoom: Double? = nil) {
+        guard let url = fileURL else { return }
+        preferences.rememberDocument(
+            url,
+            pageIndex: currentPageIndex,
+            zoom: zoom ?? Double(pdfView?.scaleFactor ?? 0),
+            layout: pageLayout
+        )
+    }
 
     func recognizeCurrentPage() {
         guard let page = pdfDocument?.page(at: currentPageIndex) else { return }
@@ -1097,7 +1231,22 @@ final class PDFWorkspace: ObservableObject {
         let panel = NSSavePanel()
         panel.allowedContentTypes = [.pdf]
         panel.nameFieldStringValue = defaultName
-        return panel.runModal() == .OK ? panel.url : nil
+        if !preferences.exportFolderPath.isEmpty {
+            let folder = URL(fileURLWithPath: preferences.exportFolderPath)
+            if FileManager.default.fileExists(atPath: folder.path) { panel.directoryURL = folder }
+        }
+        guard panel.runModal() == .OK, let url = panel.url else { return nil }
+        return url
+    }
+
+    private func confirmAction(title: String, message: String) -> Bool {
+        let alert = NSAlert()
+        alert.messageText = title
+        alert.informativeText = message
+        alert.alertStyle = .warning
+        alert.addButton(withTitle: "Continue")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
     }
 
     private func requestPassword(title: String, message: String) -> String? {

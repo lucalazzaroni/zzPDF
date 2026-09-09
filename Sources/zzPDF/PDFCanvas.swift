@@ -15,7 +15,7 @@ struct PDFCanvas: NSViewRepresentable {
         view.pageShadowsEnabled = true
         view.backgroundColor = NSColor(calibratedWhite: 0.13, alpha: 1)
         view.interpolationQuality = .high
-        workspace.pdfView = view
+        workspace.attachPDFView(view)
 
         NotificationCenter.default.addObserver(
             context.coordinator,
@@ -56,6 +56,7 @@ struct PDFCanvas: NSViewRepresentable {
             view.displayMode = workspace.pageLayout.pdfMode
             view.autoScales = true
         }
+        workspace.applyPendingViewRestoration()
         view.refreshInteractionAppearance()
     }
 
@@ -69,7 +70,7 @@ struct PDFCanvas: NSViewRepresentable {
         @objc func pageChanged(_ notification: Notification) {
             guard let workspace, let view = notification.object as? PDFView,
                   let page = view.currentPage, let document = view.document else { return }
-            workspace.currentPageIndex = document.index(for: page)
+            workspace.recordCurrentPage(document.index(for: page))
         }
 
         @objc func annotationHit(_ notification: Notification) {
@@ -86,7 +87,9 @@ struct PDFCanvas: NSViewRepresentable {
         }
 
         @objc func appearanceChanged(_ notification: Notification) {
-            (notification.object as? InteractivePDFView)?.refreshInteractionAppearance()
+            guard let view = notification.object as? InteractivePDFView else { return }
+            view.refreshInteractionAppearance()
+            workspace?.recordViewState(from: view)
         }
     }
 }

@@ -2,18 +2,31 @@ import SwiftUI
 
 @main
 struct ZZPDFApp: App {
-    @StateObject private var document = PDFWorkspace()
+    @StateObject private var preferences: AppPreferences
+    @StateObject private var document: PDFWorkspace
+
+    init() {
+        let preferences = AppPreferences()
+        _preferences = StateObject(wrappedValue: preferences)
+        _document = StateObject(wrappedValue: PDFWorkspace(preferences: preferences))
+    }
 
     var body: some Scene {
         WindowGroup {
             ContentView()
                 .environmentObject(document)
+                .environmentObject(preferences)
                 .frame(minWidth: 980, minHeight: 680)
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.unified(showsTitle: true))
         .commands {
             AppCommands(document: document)
+        }
+        Settings {
+            SettingsView()
+                .environmentObject(document)
+                .environmentObject(preferences)
         }
     }
 }

@@ -263,6 +263,12 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
             return NSFontManager.shared.convert(baseFont, toSize: size)
         }
 
+        guard owner?.workspace?.preferences.autoFitFormText != false else {
+            field.font = font(at: maximumSize)
+            field.fittedPDFPointSize = maximumSize
+            return
+        }
+
         var fittedSize = maximumSize
         if text.length > 0 {
             let measured = text.size(withAttributes: [.font: font(at: maximumSize)])

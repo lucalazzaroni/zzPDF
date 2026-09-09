@@ -5,6 +5,11 @@ import PDFKit
 struct FormOverlaySmoke {
     @MainActor
     static func main() {
+        let suiteName = "it.lucalazzaroni.zzpdf.tests.forms.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = AppPreferences(defaults: defaults)
         let pageImage = NSImage(size: NSSize(width: 600, height: 800))
         pageImage.lockFocus()
         NSColor.white.setFill()
@@ -31,7 +36,7 @@ struct FormOverlaySmoke {
         page.addAnnotation(checkWidget)
         let document = PDFDocument()
         document.insert(page, at: 0)
-        let workspace = PDFWorkspace()
+        let workspace = PDFWorkspace(preferences: preferences)
         let pdfView = InteractivePDFView(frame: CGRect(x: 0, y: 0, width: 650, height: 850))
         workspace.pdfDocument = document
         workspace.pdfView = pdfView
@@ -96,6 +101,13 @@ struct FormOverlaySmoke {
               abs((textWidget.font?.pointSize ?? 0) - fittedFormSize) < 0.01 else {
             fatalError("Redo did not restore the fitted form text appearance.")
         }
+        preferences.autoFitFormText = false
+        textField.stringValue = longFormValue
+        overlay.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: textField))
+        guard abs(textField.fittedPDFPointSize - textField.maximumPDFPointSize) < 0.01 else {
+            fatalError("The form auto-fit preference could not be disabled.")
+        }
+        preferences.autoFitFormText = true
 
         workspace.activeTool = .select
         overlay.refresh()

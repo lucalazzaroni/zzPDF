@@ -35,7 +35,10 @@ struct ContentView: View {
             guard url.pathExtension.lowercased() == "pdf" else { return }
             workspace.load(url)
         }
-        .onAppear { NSWindow.allowsAutomaticWindowTabbing = false }
+        .onAppear {
+            NSWindow.allowsAutomaticWindowTabbing = false
+            workspace.restorePreviousDocumentIfNeeded()
+        }
     }
 
     @ViewBuilder

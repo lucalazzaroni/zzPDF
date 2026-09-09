@@ -6,6 +6,11 @@ import PDFKit
 struct SearchNavigationSmoke {
     @MainActor
     static func main() {
+        let suiteName = "it.lucalazzaroni.zzpdf.tests.search.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = AppPreferences(defaults: defaults)
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
               let context = CGContext(consumer: consumer, mediaBox: nil, nil) else {
@@ -30,7 +35,7 @@ struct SearchNavigationSmoke {
         guard let document = PDFDocument(data: data as Data) else {
             fatalError("Could not open the search test PDF.")
         }
-        let workspace = PDFWorkspace()
+        let workspace = PDFWorkspace(preferences: preferences)
         let view = InteractivePDFView(frame: CGRect(x: 0, y: 0, width: 500, height: 600))
         workspace.pdfDocument = document
         workspace.pdfView = view
@@ -60,6 +65,29 @@ struct SearchNavigationSmoke {
             fatalError("Shift-Return did not reveal the previous search result.")
         }
 
-        print("Search result navigation smoke test passed.")
+        let temporaryURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("zzpdf-session-\(UUID().uuidString).pdf")
+        defer { try? FileManager.default.removeItem(at: temporaryURL) }
+        guard document.write(to: temporaryURL) else {
+            fatalError("Could not write the session restoration fixture.")
+        }
+        preferences.restoreLastDocument = true
+        preferences.rememberDocument(temporaryURL, pageIndex: 2, zoom: 1.25, layout: .single)
+        let restoredWorkspace = PDFWorkspace(preferences: preferences)
+        restoredWorkspace.restorePreviousDocumentIfNeeded()
+        let restoredView = InteractivePDFView(frame: CGRect(x: 0, y: 0, width: 500, height: 600))
+        restoredWorkspace.attachPDFView(restoredView)
+        restoredView.workspace = restoredWorkspace
+        restoredView.document = restoredWorkspace.pdfDocument
+        restoredWorkspace.applyPendingViewRestoration()
+        RunLoop.main.run(until: Date().addingTimeInterval(0.05))
+        guard restoredWorkspace.currentPageIndex == 2,
+              restoredWorkspace.pageLayout == .single,
+              restoredView.currentPage === restoredWorkspace.pdfDocument?.page(at: 2),
+              abs(restoredView.scaleFactor - 1.25) < 0.01 else {
+            fatalError("The previous PDF view state was not restored.")
+        }
+
+        print("Search navigation and session restoration smoke test passed.")
     }
 }
