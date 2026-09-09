@@ -7,7 +7,7 @@ A private, offline, native PDF editor for macOS, built with SwiftUI and PDFKit.
 
 zzPDF lets you read, organize, fill, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
 
-The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.5.11.zip`](dist/zzPDF-macOS-arm64-v0.5.11.zip).
+The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.5.12.zip`](dist/zzPDF-macOS-arm64-v0.5.12.zip).
 
 ## Features
 

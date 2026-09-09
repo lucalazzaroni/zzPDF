@@ -185,7 +185,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         field.stringValue = value
         field.valueBeforeEditing = value
         let annotationFontSize = Double(annotation.font?.pointSize ?? 14)
-        field.maximumPDFPointSize = max(1, annotationFontSize)
+        field.maximumPDFPointSize = max(14, annotationFontSize)
         field.fittedPDFPointSize = annotationFontSize
         field.font = annotation.font ?? .systemFont(ofSize: 14)
         field.textColor = annotation.fontColor
@@ -246,13 +246,12 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
     }
 
     private func fitWidgetText(in field: PDFOverlayTextField) {
-        guard let owner, let annotation = field.annotation else { return }
-        let scale = max(owner.scaleFactor, 0.01)
-        let maximumSize = field.maximumPDFPointSize * scale
-        let minimumSize = min(maximumSize, scale)
+        guard let annotation = field.annotation else { return }
+        let maximumSize = field.maximumPDFPointSize
+        let minimumSize = min(maximumSize, 1)
         let availableSize = CGSize(
-            width: max(1, field.bounds.width - 8),
-            height: max(1, field.bounds.height - 6)
+            width: max(1, annotation.bounds.width - 8),
+            height: max(1, annotation.bounds.height - 4)
         )
         let text = field.stringValue as NSString
         let baseFont = annotation.font ?? .systemFont(ofSize: field.maximumPDFPointSize)
@@ -271,15 +270,33 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
             let heightScale = availableSize.height / max(measured.height, 1)
             fittedSize = max(minimumSize, min(maximumSize, maximumSize * min(widthScale, heightScale)))
         }
-        var fittedPDFPointSize = max(1, floor(fittedSize / scale))
-        var fittedFont = font(at: fittedPDFPointSize * scale)
+        var fittedPDFPointSize = max(1, floor(fittedSize))
+        var fittedFont = font(at: fittedPDFPointSize)
         while text.length > 0, fittedPDFPointSize > 1 {
             let measured = text.size(withAttributes: [.font: fittedFont])
             guard measured.width > availableSize.width || measured.height > availableSize.height else { break }
             fittedPDFPointSize -= 1
-            fittedFont = font(at: fittedPDFPointSize * scale)
+            fittedFont = font(at: fittedPDFPointSize)
         }
-        field.font = fittedFont
+        let displayAvailableSize = CGSize(
+            width: max(1, field.bounds.width - 8),
+            height: max(1, field.bounds.height - 6)
+        )
+        var displaySize = maximumSize
+        if text.length > 0 {
+            let measured = text.size(withAttributes: [.font: font(at: maximumSize)])
+            let widthScale = displayAvailableSize.width / max(measured.width, 1)
+            let heightScale = displayAvailableSize.height / max(measured.height, 1)
+            displaySize = max(1, min(maximumSize, maximumSize * min(widthScale, heightScale)))
+        }
+        var displayFont = font(at: displaySize)
+        while text.length > 0, displaySize > 1 {
+            let measured = text.size(withAttributes: [.font: displayFont])
+            guard measured.width > displayAvailableSize.width || measured.height > displayAvailableSize.height else { break }
+            displaySize = max(1, displaySize - 0.5)
+            displayFont = font(at: displaySize)
+        }
+        field.font = displayFont
         field.fittedPDFPointSize = fittedPDFPointSize
     }
 }

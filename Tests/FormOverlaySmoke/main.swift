@@ -64,17 +64,10 @@ struct FormOverlaySmoke {
         guard textField.fittedPDFPointSize < textField.maximumPDFPointSize else {
             fatalError("Long form text was not automatically reduced to fit the field.")
         }
-        let renderedWidth = (longFormValue as NSString).size(withAttributes: [.font: textField.font!]).width
-        guard renderedWidth <= textField.bounds.width - 8 + 0.5 else {
-            fatalError(
-                "Automatically reduced form text still exceeded the field width " +
-                "(rendered \(renderedWidth), available \(textField.bounds.width - 8), " +
-                "font \(textField.font?.pointSize ?? 0), PDF size \(textField.fittedPDFPointSize))."
-            )
-        }
         textField.stringValue = "Short value"
         overlay.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: textField))
-        guard abs(textField.fittedPDFPointSize - textField.maximumPDFPointSize) < 0.01 else {
+        guard abs(textField.fittedPDFPointSize - textField.maximumPDFPointSize) < 0.01,
+              abs((textField.font?.pointSize ?? 0) - textField.maximumPDFPointSize) < 0.01 else {
             fatalError("Form text did not return to its normal size after shortening.")
         }
         textField.stringValue = longFormValue
@@ -87,6 +80,10 @@ struct FormOverlaySmoke {
                 "The fitted form text size was not saved to the PDF annotation " +
                 "(expected \(fittedFormSize), got \(textWidget.font?.pointSize ?? 0))."
             )
+        }
+        let renderedWidth = (longFormValue as NSString).size(withAttributes: [.font: textWidget.font!]).width
+        guard renderedWidth <= textWidget.bounds.width - 8 + 0.5 else {
+            fatalError("Automatically reduced form text still exceeded the PDF field width.")
         }
         workspace.undo()
         guard textWidget.widgetStringValue == "",
