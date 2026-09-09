@@ -19,7 +19,7 @@ struct ZZPDFApp: App {
                 .frame(minWidth: 980, minHeight: 680)
         }
         .windowStyle(.titleBar)
-        .windowToolbarStyle(.unified(showsTitle: true))
+        .windowToolbarStyle(.automatic)
         .commands {
             AppCommands(document: document)
         }
