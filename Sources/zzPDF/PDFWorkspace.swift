@@ -123,11 +123,20 @@ final class PDFWorkspace: ObservableObject {
     @Published var freeTextDraftText = ""
     @Published var freeTextDraftFontSize: Double = 15
     @Published var statusMessage = "Open a PDF to get started"
-    @Published var isDirty = false
+    @Published var isDirty = false {
+        didSet {
+            if isDirty {
+                scheduleTemporaryAutosave()
+            } else if oldValue {
+                clearTemporaryAutosave()
+            }
+        }
+    }
     @Published var savedSignature: [[CGPoint]] = []
     @Published var signatureImage: NSImage?
 
     let preferences: AppPreferences
+    private let recoveryStore: TemporaryRecoveryStore
 
     private var undoActions: [PDFEditAction] = []
     private var redoActions: [PDFEditAction] = []
@@ -146,6 +155,8 @@ final class PDFWorkspace: ObservableObject {
     private var pendingRestoredPageIndex: Int?
     private var pendingRestoredZoom: Double?
     private var restoringViewState = false
+    private var recoveryIdentifier = UUID()
+    private var temporaryAutosaveWorkItem: DispatchWorkItem?
 
     weak var pdfView: InteractivePDFView?
 
@@ -165,8 +176,12 @@ final class PDFWorkspace: ObservableObject {
     var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
     var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
 
-    init(preferences: AppPreferences = AppPreferences()) {
+    init(
+        preferences: AppPreferences = AppPreferences(),
+        recoveryStore: TemporaryRecoveryStore? = nil
+    ) {
         self.preferences = preferences
+        self.recoveryStore = recoveryStore ?? .shared
         pageLayout = preferences.defaultPageLayout
         activeTool = preferences.initialTool
         sidebarVisible = preferences.sidebarVisible
@@ -176,6 +191,7 @@ final class PDFWorkspace: ObservableObject {
         textFontSize = preferences.textFontSize
         shapeHasFill = preferences.shapeHasFill
         shapeFillColor = preferences.shapeFillColor
+        self.recoveryStore.reserve(recoveryIdentifier)
     }
 
     func openDocument() {
@@ -203,6 +219,7 @@ final class PDFWorkspace: ObservableObject {
                 return
             }
         }
+        prepareToReplaceCurrentDocument()
         pdfDocument = document
         fileURL = url
         currentPageIndex = 0
@@ -1039,6 +1056,7 @@ final class PDFWorkspace: ObservableObject {
     func restorePreviousDocumentIfNeeded() {
         guard !didAttemptSessionRestore else { return }
         didAttemptSessionRestore = true
+        if restoreTemporaryRecoveryIfAvailable() { return }
         guard preferences.restoreLastDocument, let url = preferences.lastDocumentURL else { return }
         guard FileManager.default.fileExists(atPath: url.path) else {
             preferences.forgetLastDocument()
@@ -1105,6 +1123,11 @@ final class PDFWorkspace: ObservableObject {
         shapeFillColor = preferences.shapeFillColor
         setPageLayout(preferences.defaultPageLayout)
         refreshPreferenceAppearance()
+        if preferences.temporaryAutosave {
+            if isDirty { scheduleTemporaryAutosave() }
+        } else {
+            clearTemporaryAutosave()
+        }
     }
 
     private func rememberCurrentView(zoom: Double? = nil) {
@@ -1225,6 +1248,77 @@ final class PDFWorkspace: ObservableObject {
         statusMessage = message
         pdfView?.needsDisplay = true
         objectWillChange.send()
+    }
+
+    func flushTemporaryAutosave() {
+        temporaryAutosaveWorkItem?.cancel()
+        temporaryAutosaveWorkItem = nil
+        guard preferences.temporaryAutosave, isDirty, let document = pdfDocument else { return }
+        let succeeded = recoveryStore.write(
+            document: document,
+            identifier: recoveryIdentifier,
+            originalURL: fileURL,
+            displayName: displayName,
+            pageIndex: currentPageIndex,
+            zoom: Double(pdfView?.scaleFactor ?? 0),
+            pageLayout: pageLayout
+        )
+        if succeeded { statusMessage = "Temporary recovery copy saved" }
+    }
+
+    private func scheduleTemporaryAutosave() {
+        guard preferences.temporaryAutosave, pdfDocument != nil else { return }
+        temporaryAutosaveWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.flushTemporaryAutosave()
+        }
+        temporaryAutosaveWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)
+    }
+
+    private func clearTemporaryAutosave() {
+        temporaryAutosaveWorkItem?.cancel()
+        temporaryAutosaveWorkItem = nil
+        recoveryStore.discard(recoveryIdentifier)
+    }
+
+    private func prepareToReplaceCurrentDocument() {
+        if isDirty {
+            flushTemporaryAutosave()
+            recoveryIdentifier = UUID()
+            recoveryStore.reserve(recoveryIdentifier)
+        } else {
+            clearTemporaryAutosave()
+            recoveryIdentifier = UUID()
+            recoveryStore.reserve(recoveryIdentifier)
+        }
+    }
+
+    private func restoreTemporaryRecoveryIfAvailable() -> Bool {
+        guard preferences.temporaryAutosave,
+              let (record, document) = recoveryStore.claimLatest()
+        else { return false }
+
+        recoveryIdentifier = record.identifier
+        pdfDocument = document
+        if let path = record.originalPath, FileManager.default.fileExists(atPath: path) {
+            fileURL = URL(fileURLWithPath: path)
+        } else {
+            fileURL = nil
+        }
+        currentPageIndex = max(0, min(record.pageIndex, max(0, document.pageCount - 1)))
+        pageLayout = PageLayoutMode(rawValue: record.pageLayout) ?? preferences.defaultPageLayout
+        activeTool = preferences.initialTool
+        selectedAnnotation = nil
+        hasTextSelection = false
+        undoActions.removeAll()
+        redoActions.removeAll()
+        pendingRestoredPageIndex = currentPageIndex
+        pendingRestoredZoom = record.zoom > 0 ? record.zoom : nil
+        restoringViewState = true
+        isDirty = true
+        statusMessage = "Recovered unsaved changes from \(record.displayName)"
+        return true
     }
 
     private func chooseSaveURL(defaultName: String) -> URL? {

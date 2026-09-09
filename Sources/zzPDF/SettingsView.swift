@@ -2,8 +2,8 @@ import AppKit
 import SwiftUI
 
 struct SettingsView: View {
-    @EnvironmentObject private var workspace: PDFWorkspace
     @EnvironmentObject private var preferences: AppPreferences
+    @EnvironmentObject private var registry: WorkspaceRegistry
 
     var body: some View {
         TabView {
@@ -22,6 +22,8 @@ struct SettingsView: View {
         Form {
             Section("Startup") {
                 Toggle("Restore the previously open PDF", isOn: $preferences.restoreLastDocument)
+                Toggle("Keep temporary recovery copies", isOn: $preferences.temporaryAutosave)
+                    .onChange(of: preferences.temporaryAutosave) { _, _ in applyPreferences() }
                 Picker("Initial tool", selection: $preferences.initialTool) {
                     Label("Select", systemImage: CanvasTool.select.symbol).tag(CanvasTool.select)
                     Label("Fill Forms", systemImage: CanvasTool.fillForms.symbol).tag(CanvasTool.fillForms)
@@ -33,15 +35,17 @@ struct SettingsView: View {
                         Label(layout.label, systemImage: layout.symbol).tag(layout)
                     }
                 }
-                .onChange(of: preferences.defaultPageLayout) { _, layout in workspace.setPageLayout(layout) }
-                Toggle("Show thumbnails", isOn: $workspace.sidebarVisible)
-                Toggle("Show Inspector", isOn: $workspace.inspectorVisible)
+                .onChange(of: preferences.defaultPageLayout) { _, _ in applyPreferences() }
+                Toggle("Show thumbnails", isOn: $preferences.sidebarVisible)
+                    .onChange(of: preferences.sidebarVisible) { _, _ in applyPreferences() }
+                Toggle("Show Inspector", isOn: $preferences.inspectorVisible)
+                    .onChange(of: preferences.inspectorVisible) { _, _ in applyPreferences() }
             }
             HStack {
                 Spacer()
                 Button("Restore Defaults") {
                     preferences.reset()
-                    workspace.applyDefaultPreferences()
+                    applyPreferences()
                 }
             }
         }
@@ -54,32 +58,41 @@ struct SettingsView: View {
                 HStack {
                     Text("Default color")
                     Spacer()
-                    ColorPicker("", selection: $workspace.annotationColor, supportsOpacity: true).labelsHidden()
+                    ColorPicker("", selection: $preferences.annotationColor, supportsOpacity: true)
+                        .labelsHidden()
+                        .onChange(of: preferences.annotationColor) { _, _ in applyPreferences() }
                 }
                 LabeledContent("Default stroke width") {
                     HStack {
-                        Slider(value: $workspace.lineWidth, in: 0.5...12, step: 0.5).frame(width: 190)
-                        Text(String(format: "%.1f pt", workspace.lineWidth)).monospacedDigit().frame(width: 52)
+                        Slider(value: $preferences.lineWidth, in: 0.5...12, step: 0.5)
+                            .frame(width: 190)
+                            .onChange(of: preferences.lineWidth) { _, _ in applyPreferences() }
+                        Text(String(format: "%.1f pt", preferences.lineWidth)).monospacedDigit().frame(width: 52)
                     }
                 }
                 LabeledContent("Default text size") {
                     HStack {
-                        Slider(value: $workspace.textFontSize, in: 8...72, step: 1).frame(width: 190)
-                        Text("\(Int(workspace.textFontSize)) pt").monospacedDigit().frame(width: 52)
+                        Slider(value: $preferences.textFontSize, in: 8...72, step: 1)
+                            .frame(width: 190)
+                            .onChange(of: preferences.textFontSize) { _, _ in applyPreferences() }
+                        Text("\(Int(preferences.textFontSize)) pt").monospacedDigit().frame(width: 52)
                     }
                 }
-                Toggle("Fill new shapes", isOn: $workspace.shapeHasFill)
-                if workspace.shapeHasFill {
+                Toggle("Fill new shapes", isOn: $preferences.shapeHasFill)
+                    .onChange(of: preferences.shapeHasFill) { _, _ in applyPreferences() }
+                if preferences.shapeHasFill {
                     HStack {
                         Text("Default shape fill")
                         Spacer()
-                        ColorPicker("", selection: $workspace.shapeFillColor, supportsOpacity: true).labelsHidden()
+                        ColorPicker("", selection: $preferences.shapeFillColor, supportsOpacity: true)
+                            .labelsHidden()
+                            .onChange(of: preferences.shapeFillColor) { _, _ in applyPreferences() }
                     }
                 }
             }
             Section("Forms") {
                 Toggle("Automatically shrink text to fit form fields", isOn: $preferences.autoFitFormText)
-                    .onChange(of: preferences.autoFitFormText) { _, _ in workspace.refreshPreferenceAppearance() }
+                    .onChange(of: preferences.autoFitFormText) { _, _ in applyPreferences() }
             }
         }
         .formStyle(.grouped)
@@ -123,5 +136,9 @@ struct SettingsView: View {
         if panel.runModal() == .OK, let url = panel.url {
             preferences.exportFolderPath = url.path
         }
+    }
+
+    private func applyPreferences() {
+        registry.applyPreferencesToOpenDocuments()
     }
 }

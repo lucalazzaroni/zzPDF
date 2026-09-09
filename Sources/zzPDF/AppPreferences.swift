@@ -4,6 +4,7 @@ import SwiftUI
 final class AppPreferences: ObservableObject {
     private enum Key {
         static let restoreLastDocument = "restoreLastDocument"
+        static let temporaryAutosave = "temporaryAutosave"
         static let defaultPageLayout = "defaultPageLayout"
         static let initialTool = "initialTool"
         static let sidebarVisible = "sidebarVisible"
@@ -26,6 +27,7 @@ final class AppPreferences: ObservableObject {
     private let defaults: UserDefaults
 
     @Published var restoreLastDocument: Bool { didSet { defaults.set(restoreLastDocument, forKey: Key.restoreLastDocument) } }
+    @Published var temporaryAutosave: Bool { didSet { defaults.set(temporaryAutosave, forKey: Key.temporaryAutosave) } }
     @Published var defaultPageLayout: PageLayoutMode { didSet { defaults.set(defaultPageLayout.rawValue, forKey: Key.defaultPageLayout) } }
     @Published var initialTool: CanvasTool { didSet { defaults.set(initialTool.rawValue, forKey: Key.initialTool) } }
     @Published var sidebarVisible: Bool { didSet { defaults.set(sidebarVisible, forKey: Key.sidebarVisible) } }
@@ -44,6 +46,7 @@ final class AppPreferences: ObservableObject {
         self.defaults = defaults
         defaults.register(defaults: [
             Key.restoreLastDocument: true,
+            Key.temporaryAutosave: true,
             Key.defaultPageLayout: PageLayoutMode.continuous.rawValue,
             Key.initialTool: CanvasTool.select.rawValue,
             Key.sidebarVisible: true,
@@ -57,6 +60,7 @@ final class AppPreferences: ObservableObject {
             Key.exportFolderPath: ""
         ])
         restoreLastDocument = defaults.bool(forKey: Key.restoreLastDocument)
+        temporaryAutosave = defaults.bool(forKey: Key.temporaryAutosave)
         defaultPageLayout = PageLayoutMode(rawValue: defaults.string(forKey: Key.defaultPageLayout) ?? "") ?? .continuous
         let storedTool = CanvasTool(rawValue: defaults.string(forKey: Key.initialTool) ?? "") ?? .select
         initialTool = [.select, .fillForms].contains(storedTool) ? storedTool : .select
@@ -105,6 +109,7 @@ final class AppPreferences: ObservableObject {
 
     func reset() {
         restoreLastDocument = true
+        temporaryAutosave = true
         defaultPageLayout = .continuous
         initialTool = .select
         sidebarVisible = true

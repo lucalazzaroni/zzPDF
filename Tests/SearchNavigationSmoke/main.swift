@@ -11,6 +11,7 @@ struct SearchNavigationSmoke {
         defaults.removePersistentDomain(forName: suiteName)
         defer { defaults.removePersistentDomain(forName: suiteName) }
         let preferences = AppPreferences(defaults: defaults)
+        preferences.temporaryAutosave = false
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
               let context = CGContext(consumer: consumer, mediaBox: nil, nil) else {

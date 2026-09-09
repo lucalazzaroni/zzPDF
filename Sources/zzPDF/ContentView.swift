@@ -36,9 +36,11 @@ struct ContentView: View {
             workspace.load(url)
         }
         .onAppear {
-            NSWindow.allowsAutomaticWindowTabbing = false
-            workspace.restorePreviousDocumentIfNeeded()
+            NSWindow.allowsAutomaticWindowTabbing = true
+            NSApp.keyWindow?.tabbingMode = .preferred
         }
+        .onDisappear { workspace.flushTemporaryAutosave() }
+        .navigationTitle(workspace.hasDocument ? workspace.displayName : "zzPDF")
     }
 
     @ViewBuilder

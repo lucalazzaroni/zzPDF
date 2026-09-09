@@ -12,6 +12,7 @@ struct SettingsSmoke {
 
         let preferences = AppPreferences(defaults: defaults)
         guard preferences.restoreLastDocument,
+              preferences.temporaryAutosave,
               preferences.defaultPageLayout == .continuous,
               preferences.initialTool == .select,
               preferences.autoFitFormText else {
@@ -47,6 +48,7 @@ struct SettingsSmoke {
         reloaded.reset()
         guard reloaded.sidebarVisible,
               reloaded.inspectorVisible,
+              reloaded.temporaryAutosave,
               reloaded.initialTool == .select,
               abs(reloaded.lineWidth - 2.5) < 0.01,
               abs(reloaded.textFontSize - 15) < 0.01,
