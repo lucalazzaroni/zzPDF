@@ -67,6 +67,12 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         field.valueBeforeEditing = field.stringValue
     }
 
+    func controlTextDidChange(_ notification: Notification) {
+        guard let field = notification.object as? PDFOverlayTextField,
+              !field.isFreeTextEditor else { return }
+        fitWidgetText(in: field)
+    }
+
     func controlTextDidEndEditing(_ notification: Notification) {
         guard let field = notification.object as? PDFOverlayTextField,
               let annotation = field.annotation else { return }
@@ -75,7 +81,16 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
             cancel(field)
             return
         }
-        owner?.workspace?.updateEditableText(in: annotation, to: field.stringValue)
+        if annotation.isSubtype(.widget), annotation.widgetFieldType == .text {
+            fitWidgetText(in: field)
+            owner?.workspace?.updateFormText(
+                in: annotation,
+                to: field.stringValue,
+                fontSize: field.fittedPDFPointSize
+            )
+        } else {
+            owner?.workspace?.updateEditableText(in: annotation, to: field.stringValue)
+        }
         if field.isFreeTextEditor {
             field.removeFromSuperview()
             freeTextEditor = nil
@@ -110,6 +125,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
             freeTextEditor = nil
         } else {
             field.stringValue = field.valueBeforeEditing
+            fitWidgetText(in: field)
             window?.makeFirstResponder(nil)
         }
     }
@@ -168,6 +184,9 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         field.annotation = annotation
         field.stringValue = value
         field.valueBeforeEditing = value
+        let annotationFontSize = Double(annotation.font?.pointSize ?? 14)
+        field.maximumPDFPointSize = max(1, annotationFontSize)
+        field.fittedPDFPointSize = annotationFontSize
         field.font = annotation.font ?? .systemFont(ofSize: 14)
         field.textColor = annotation.fontColor
         field.backgroundColor = NSColor.textBackgroundColor.withAlphaComponent(0.96)
@@ -219,6 +238,49 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         guard let owner, let page else { return }
         let pdfViewRect = owner.convert(annotation.bounds, from: page).standardized
         view.frame = convert(pdfViewRect, from: owner).standardized.insetBy(dx: 1, dy: 1)
+        if let field = view as? PDFOverlayTextField,
+           annotation.isSubtype(.widget),
+           annotation.widgetFieldType == .text {
+            fitWidgetText(in: field)
+        }
+    }
+
+    private func fitWidgetText(in field: PDFOverlayTextField) {
+        guard let owner, let annotation = field.annotation else { return }
+        let scale = max(owner.scaleFactor, 0.01)
+        let maximumSize = field.maximumPDFPointSize * scale
+        let minimumSize = min(maximumSize, scale)
+        let availableSize = CGSize(
+            width: max(1, field.bounds.width - 8),
+            height: max(1, field.bounds.height - 6)
+        )
+        let text = field.stringValue as NSString
+        let baseFont = annotation.font ?? .systemFont(ofSize: field.maximumPDFPointSize)
+
+        func font(at size: Double) -> NSFont {
+            if baseFont.fontName.hasPrefix(".") {
+                return .systemFont(ofSize: size)
+            }
+            return NSFontManager.shared.convert(baseFont, toSize: size)
+        }
+
+        var fittedSize = maximumSize
+        if text.length > 0 {
+            let measured = text.size(withAttributes: [.font: font(at: maximumSize)])
+            let widthScale = availableSize.width / max(measured.width, 1)
+            let heightScale = availableSize.height / max(measured.height, 1)
+            fittedSize = max(minimumSize, min(maximumSize, maximumSize * min(widthScale, heightScale)))
+        }
+        var fittedPDFPointSize = max(1, floor(fittedSize / scale))
+        var fittedFont = font(at: fittedPDFPointSize * scale)
+        while text.length > 0, fittedPDFPointSize > 1 {
+            let measured = text.size(withAttributes: [.font: fittedFont])
+            guard measured.width > availableSize.width || measured.height > availableSize.height else { break }
+            fittedPDFPointSize -= 1
+            fittedFont = font(at: fittedPDFPointSize * scale)
+        }
+        field.font = fittedFont
+        field.fittedPDFPointSize = fittedPDFPointSize
     }
 }
 
@@ -226,6 +288,8 @@ final class PDFOverlayTextField: NSTextField {
     weak var annotation: PDFAnnotation?
     var valueBeforeEditing = ""
     var isFreeTextEditor = false
+    var maximumPDFPointSize: Double = 14
+    var fittedPDFPointSize: Double = 14
 }
 
 final class PDFOverlayButton: NSButton {

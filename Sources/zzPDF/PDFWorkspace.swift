@@ -769,6 +769,29 @@ final class PDFWorkspace: ObservableObject {
         changed(isWidget ? "Form field updated" : "Text updated")
     }
 
+    func updateFormText(in annotation: PDFAnnotation, to value: String, fontSize: Double) {
+        guard annotation.isSubtype(.widget), annotation.widgetFieldType == .text else { return }
+        let oldValue = annotation.widgetStringValue ?? ""
+        let oldFont = annotation.font
+        let oldFontSize = Double(oldFont?.pointSize ?? 14)
+        guard oldValue != value || abs(oldFontSize - fontSize) > 0.01 else { return }
+        let wasDirty = isDirty
+        let apply: (String, Double) -> Void = { text, size in
+            annotation.widgetStringValue = text
+            self.applyFontSize(size, to: annotation)
+        }
+        apply(value, fontSize)
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: {
+                annotation.widgetStringValue = oldValue
+                annotation.font = oldFont
+            },
+            redo: { apply(value, fontSize) }
+        )
+        changed("Form field updated")
+    }
+
     func beginEditingFreeText(_ annotation: PDFAnnotation) {
         guard annotation.isSubtype(.freeText) else { return }
         editingFreeText = annotation

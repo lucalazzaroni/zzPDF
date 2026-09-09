@@ -57,6 +57,49 @@ struct FormOverlaySmoke {
             fatalError("PDF form overlay controls are not visible and interactive.")
         }
 
+        let originalFormFont = textWidget.font
+        let longFormValue = "This value is deliberately longer than the available form field width"
+        textField.stringValue = longFormValue
+        overlay.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: textField))
+        guard textField.fittedPDFPointSize < textField.maximumPDFPointSize else {
+            fatalError("Long form text was not automatically reduced to fit the field.")
+        }
+        let renderedWidth = (longFormValue as NSString).size(withAttributes: [.font: textField.font!]).width
+        guard renderedWidth <= textField.bounds.width - 8 + 0.5 else {
+            fatalError(
+                "Automatically reduced form text still exceeded the field width " +
+                "(rendered \(renderedWidth), available \(textField.bounds.width - 8), " +
+                "font \(textField.font?.pointSize ?? 0), PDF size \(textField.fittedPDFPointSize))."
+            )
+        }
+        textField.stringValue = "Short value"
+        overlay.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: textField))
+        guard abs(textField.fittedPDFPointSize - textField.maximumPDFPointSize) < 0.01 else {
+            fatalError("Form text did not return to its normal size after shortening.")
+        }
+        textField.stringValue = longFormValue
+        overlay.controlTextDidChange(Notification(name: NSControl.textDidChangeNotification, object: textField))
+        let fittedFormSize = textField.fittedPDFPointSize
+        overlay.controlTextDidEndEditing(Notification(name: NSControl.textDidEndEditingNotification, object: textField))
+        guard textWidget.widgetStringValue == longFormValue,
+              abs((textWidget.font?.pointSize ?? 0) - fittedFormSize) < 0.01 else {
+            fatalError(
+                "The fitted form text size was not saved to the PDF annotation " +
+                "(expected \(fittedFormSize), got \(textWidget.font?.pointSize ?? 0))."
+            )
+        }
+        workspace.undo()
+        guard textWidget.widgetStringValue == "",
+              textWidget.font?.fontName == originalFormFont?.fontName,
+              abs((textWidget.font?.pointSize ?? 0) - (originalFormFont?.pointSize ?? 0)) < 0.01 else {
+            fatalError("Undo did not restore the original form text appearance.")
+        }
+        workspace.redo()
+        guard textWidget.widgetStringValue == longFormValue,
+              abs((textWidget.font?.pointSize ?? 0) - fittedFormSize) < 0.01 else {
+            fatalError("Redo did not restore the fitted form text appearance.")
+        }
+
         workspace.activeTool = .select
         overlay.refresh()
         guard textField.isHidden, checkButton.isHidden else {
