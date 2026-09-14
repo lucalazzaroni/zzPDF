@@ -130,6 +130,9 @@ struct AppCommands: Commands {
             Button("Select Tool") { document?.activateSelectTool() }
                 .keyboardShortcut(.escape, modifiers: [])
                 .disabled(document == nil)
+            Button("Edit Text Tool") { document?.activateTool(.editText) }
+                .keyboardShortcut("e", modifiers: [.command, .shift])
+                .disabled(document?.hasDocument != true)
             Divider()
             Button("Highlight Selection") { document?.addMarkup(.highlight) }
                 .keyboardShortcut("h", modifiers: [.command, .shift])

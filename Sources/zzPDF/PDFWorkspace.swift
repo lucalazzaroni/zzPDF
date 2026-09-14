@@ -4,13 +4,14 @@ import SwiftUI
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
-    case select, fillForms, highlight, underline, strikeOut, note, text, draw, rectangle, oval, redact, signature
+    case select, fillForms, editText, highlight, underline, strikeOut, note, text, draw, rectangle, oval, redact, signature
 
     var id: String { rawValue }
     var label: String {
         switch self {
         case .select: "Select"
         case .fillForms: "Fill Forms"
+        case .editText: "Edit Text"
         case .highlight: "Highlight"
         case .underline: "Underline"
         case .strikeOut: "Strike Through"
@@ -27,6 +28,7 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         switch self {
         case .select: "cursorarrow"
         case .fillForms: "list.bullet.rectangle"
+        case .editText: "character.cursor.ibeam"
         case .highlight: "highlighter"
         case .underline: "underline"
         case .strikeOut: "strikethrough"
@@ -82,6 +84,30 @@ enum PageLayoutMode: String, CaseIterable, Identifiable {
     }
 }
 
+private final class CoverLink {
+    let cover: PDFAnnotation
+    var alignedTextBounds: CGRect
+
+    init(cover: PDFAnnotation, alignedTextBounds: CGRect) {
+        self.cover = cover
+        self.alignedTextBounds = alignedTextBounds
+    }
+}
+
+private struct TextEditSession {
+    let annotation: PDFAnnotation
+    let cover: PDFAnnotation?
+    let page: PDFPage
+    let isNew: Bool
+    let multiline: Bool
+    let baseline: CGFloat
+    let wasDirtyBefore: Bool
+    let contents: String
+    let font: NSFont?
+    let bounds: CGRect
+    let coverBounds: CGRect?
+}
+
 private struct PDFEditAction {
     let undo: () -> Void
     let redo: () -> Void
@@ -107,6 +133,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var textToInsert = "Text"
     @Published var textFontSize: Double = 15 { didSet { preferences.textFontSize = textFontSize } }
     @Published var selectedTextFontSize: Double = 15
+    @Published var selectedTextColor: Color = .black
+    @Published var selectedTextBackground: Color = .white
+    @Published var selectedTextAlignment: NSTextAlignment = .left
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
@@ -146,6 +175,9 @@ final class PDFWorkspace: ObservableObject {
     private var pendingNewFreeText: PDFAnnotation?
     private var pendingFreeTextWasDirty = false
     private var editingFreeText: PDFAnnotation?
+    private var activeTextEdit: TextEditSession?
+    private var coversByText: [ObjectIdentifier: CoverLink] = [:]
+    private var textsByCover: [ObjectIdentifier: PDFAnnotation] = [:]
     private var shapeStrokeBeforeEditing: Double?
     private var shapeStrokeWasDirty = false
     private var textSizeBeforeEditing: Double?
@@ -229,6 +261,8 @@ final class PDFWorkspace: ObservableObject {
         hasTextSelection = false
         pendingNewNote = nil
         pendingNewFreeText = nil
+        activeTextEdit = nil
+        rebuildTextReplacementLinks()
         undoActions.removeAll()
         redoActions.removeAll()
         isDirty = false
@@ -245,8 +279,15 @@ final class PDFWorkspace: ObservableObject {
         _ = saveForClosing()
     }
 
+    /// Closes an open in-place editor so its text reaches the page before it is written out.
+    func finishActiveTextEditing() {
+        guard activeTextEdit != nil else { return }
+        pdfView?.commitInlineTextEditing()
+    }
+
     @discardableResult
     func saveForClosing() -> Bool {
+        finishActiveTextEditing()
         guard let document = pdfDocument else { return true }
         guard let url = fileURL else { return saveAsDocument() }
         if document.write(to: url) {
@@ -276,6 +317,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func printDocument() {
+        finishActiveTextEditing()
         guard let operation = makePrintOperation() else {
             presentError("The document could not be prepared for printing.")
             return
@@ -285,6 +327,7 @@ final class PDFWorkspace: ObservableObject {
 
     @discardableResult
     private func saveAsDocument() -> Bool {
+        finishActiveTextEditing()
         guard let document = pdfDocument,
               let url = chooseSaveURL(defaultName: "\(displayName).pdf")
         else { return false }
@@ -306,6 +349,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func exportFlattened() {
+        finishActiveTextEditing()
         if preferences.confirmFlattenedExport,
            !confirmAction(
                title: "Export Flattened Copy?",
@@ -326,6 +370,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func exportProtected(ownerPassword: String, userPassword: String, flatten: Bool) {
+        finishActiveTextEditing()
         guard let document = pdfDocument,
               !ownerPassword.isEmpty,
               let url = chooseSaveURL(defaultName: "\(displayName)-protected.pdf") else { return }
@@ -518,7 +563,7 @@ final class PDFWorkspace: ObservableObject {
         let annotation: PDFAnnotation?
         let tool = activeTool
         switch tool {
-        case .select, .fillForms, .highlight, .underline, .strikeOut:
+        case .select, .fillForms, .editText, .highlight, .underline, .strikeOut:
             return
         case .note:
             let item = NoteMarkerAnnotation(bounds: CGRect(x: point.x - 14, y: point.y - 14, width: 28, height: 28))
@@ -661,11 +706,15 @@ final class PDFWorkspace: ObservableObject {
     func removeSelectedAnnotation() {
         guard let annotation = selectedAnnotation, let page = annotation.page else { return }
         let wasDirty = isDirty
+        let cover = linkedCover(for: annotation)
         page.removeAnnotation(annotation)
+        if let cover { page.removeAnnotation(cover) }
         registerEdit(wasDirtyBefore: wasDirty, undo: {
+            if let cover { page.addAnnotation(cover) }
             page.addAnnotation(annotation)
         }, redo: {
             page.removeAnnotation(annotation)
+            if let cover { page.removeAnnotation(cover) }
         })
         selectAnnotation(nil)
         changed("Annotation removed")
@@ -696,6 +745,10 @@ final class PDFWorkspace: ObservableObject {
     private func synchronizeSelectedTextAppearance() {
         guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
         selectedTextFontSize = Double(annotation.font?.pointSize ?? 15)
+        selectedTextColor = Color(nsColor: annotation.fontColor ?? .black)
+        selectedTextAlignment = annotation.alignment
+        let background = linkedCover(for: annotation)?.interiorColor ?? annotation.color
+        selectedTextBackground = Color(nsColor: background)
     }
 
     func beginSelectedTextSizeChange() {
@@ -734,10 +787,16 @@ final class PDFWorkspace: ObservableObject {
 
     private func applyFontSize(_ size: Double, to annotation: PDFAnnotation) {
         let currentFont = annotation.font ?? .systemFont(ofSize: size)
+        let resized: NSFont
         if currentFont.fontName.hasPrefix(".") {
-            annotation.font = .systemFont(ofSize: size)
+            resized = .systemFont(ofSize: size)
         } else {
-            annotation.font = NSFontManager.shared.convert(currentFont, toSize: size)
+            resized = NSFontManager.shared.convert(currentFont, toSize: size)
+        }
+        if TextEditMarker.isTextEdit(annotation) {
+            applyTextFont(resized, to: annotation)
+        } else {
+            annotation.font = resized
         }
     }
 
@@ -974,6 +1033,367 @@ final class PDFWorkspace: ObservableObject {
         objectWillChange.send()
     }
 
+    // MARK: - Editing existing page text
+
+    var selectedAnnotationIsTextReplacement: Bool {
+        guard let annotation = selectedAnnotation else { return false }
+        return TextEditMarker.isTextEdit(annotation) && annotation.isSubtype(.freeText)
+    }
+
+    func replaceableText(at point: CGPoint, on page: PDFPage) -> ReplaceableText? {
+        PageTextScanner.replaceableText(at: point, on: page)
+    }
+
+    func replaceableTextBounds(at point: CGPoint, on page: PDFPage) -> CGRect? {
+        PageTextScanner.lineBounds(at: point, on: page)
+    }
+
+    func beginTextReplacement(at point: CGPoint, on page: PDFPage) {
+        guard let replacement = PageTextScanner.replaceableText(at: point, on: page) else {
+            statusMessage = "No editable text here"
+            return
+        }
+        beginTextReplacement(replacement)
+    }
+
+    func beginTextReplacement(in rect: CGRect, on page: PDFPage) {
+        guard let replacement = PageTextScanner.replaceableText(in: rect, on: page) else {
+            statusMessage = "No editable text in the selected area"
+            return
+        }
+        beginTextReplacement(replacement)
+    }
+
+    func beginTextReplacement(_ replacement: ReplaceableText) {
+        pdfView?.cancelInlineTextEditing()
+        let page = replacement.page
+        let wasDirty = isDirty
+        let identifier = TextEditMarker.makeIdentifier()
+        let bounds = replacement.textBounds
+
+        let cover = PDFAnnotation(
+            bounds: FreeTextLayout.coverBounds(for: bounds, font: replacement.font)
+                .insetBy(dx: -FreeTextLayout.coverPadding, dy: -FreeTextLayout.coverPadding / 2),
+            forType: .square,
+            withProperties: nil
+        )
+        cover.color = replacement.backgroundColor
+        cover.interiorColor = replacement.backgroundColor
+        let border = PDFBorder()
+        border.lineWidth = 0
+        cover.border = border
+        cover.userName = identifier
+
+        let text = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
+        text.contents = replacement.text
+        text.font = replacement.font
+        text.fontColor = replacement.fontColor
+        text.color = .clear
+        text.alignment = .left
+        text.userName = identifier
+
+        page.addAnnotation(cover)
+        page.addAnnotation(text)
+        link(cover: cover, to: text)
+        activeTextEdit = TextEditSession(
+            annotation: text,
+            cover: cover,
+            page: page,
+            isNew: true,
+            multiline: replacement.isMultiline,
+            baseline: replacement.firstBaseline,
+            wasDirtyBefore: wasDirty,
+            contents: replacement.text,
+            font: replacement.font,
+            bounds: bounds,
+            coverBounds: cover.bounds
+        )
+        selectAnnotation(text)
+        isDirty = true
+        statusMessage = "Editing page text — Escape restores the original"
+        pdfView?.needsDisplay = true
+        pdfView?.beginInlineTextEditing(text, on: page, singleLine: !replacement.isMultiline)
+    }
+
+    func beginInlineTextEditing(_ annotation: PDFAnnotation) {
+        guard annotation.isSubtype(.freeText), let page = annotation.page else { return }
+        pdfView?.cancelInlineTextEditing()
+        let contents = annotation.contents ?? ""
+        let multiline = contents.contains("\n")
+        activeTextEdit = TextEditSession(
+            annotation: annotation,
+            cover: linkedCover(for: annotation),
+            page: page,
+            isNew: false,
+            multiline: multiline,
+            baseline: FreeTextLayout.baseline(of: annotation) ?? annotation.bounds.minY,
+            wasDirtyBefore: isDirty,
+            contents: contents,
+            font: annotation.font,
+            bounds: annotation.bounds,
+            coverBounds: linkedCover(for: annotation)?.bounds
+        )
+        selectAnnotation(annotation)
+        pdfView?.beginInlineTextEditing(annotation, on: page, singleLine: !multiline)
+    }
+
+    /// Reflows the annotation while the editor is open so the box the user types in is
+    /// the box the page will end up with.
+    @discardableResult
+    func previewTextEdit(_ text: String) -> NSFont? {
+        guard let session = activeTextEdit else { return nil }
+        return applyTextEditLayout(text, session: session)
+    }
+
+    @discardableResult
+    private func applyTextEditLayout(_ text: String, session: TextEditSession) -> NSFont? {
+        guard let baseFont = session.font ?? session.annotation.font else { return nil }
+        let result = TextFitting.fit(
+            text: text,
+            font: baseFont,
+            in: session.bounds,
+            multiline: session.multiline,
+            within: session.page.bounds(for: .cropBox)
+        )
+        let top = FreeTextLayout.topEdge(forBaseline: session.baseline, font: result.font)
+        let bottom = min(result.bounds.minY, top - 4)
+        session.annotation.contents = text
+        session.annotation.font = result.font
+        session.annotation.bounds = CGRect(
+            x: result.bounds.minX,
+            y: bottom,
+            width: result.bounds.width,
+            height: top - bottom
+        )
+        retainCover(for: session.annotation)
+        pdfView?.needsDisplay = true
+        return result.font
+    }
+
+    func commitTextReplacement(_ annotation: PDFAnnotation, text: String) {
+        pdfView?.detachInlineTextEditing()
+        guard let session = activeTextEdit, session.annotation === annotation else {
+            pdfView?.needsDisplay = true
+            return
+        }
+        activeTextEdit = nil
+        applyTextEditLayout(text, session: session)
+        let page = session.page
+        let cover = session.cover
+        let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+
+        if session.isNew {
+            registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
+                page.removeAnnotation(annotation)
+                if let cover { page.removeAnnotation(cover) }
+            }, redo: {
+                if let cover { page.addAnnotation(cover) }
+                page.addAnnotation(annotation)
+            })
+            synchronizeSelectedTextAppearance()
+            changed(isEmpty ? "Page text removed" : "Page text replaced")
+            return
+        }
+
+        let newContents = annotation.contents ?? ""
+        let newFont = annotation.font
+        let newBounds = annotation.bounds
+        let newCoverBounds = cover?.bounds
+        guard newContents != session.contents || newBounds != session.bounds else {
+            isDirty = session.wasDirtyBefore
+            pdfView?.needsDisplay = true
+            return
+        }
+        let previousContents = session.contents
+        let previousFont = session.font
+        let previousBounds = session.bounds
+        let previousCoverBounds = session.coverBounds
+        registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
+            annotation.contents = previousContents
+            annotation.font = previousFont
+            annotation.bounds = previousBounds
+            if let cover, let previousCoverBounds { cover.bounds = previousCoverBounds }
+        }, redo: {
+            annotation.contents = newContents
+            annotation.font = newFont
+            annotation.bounds = newBounds
+            if let cover, let newCoverBounds { cover.bounds = newCoverBounds }
+        })
+        synchronizeSelectedTextAppearance()
+        changed("Text updated")
+    }
+
+    func cancelTextReplacement(_ annotation: PDFAnnotation) {
+        pdfView?.detachInlineTextEditing()
+        guard let session = activeTextEdit, session.annotation === annotation else {
+            statusMessage = "Text editing cancelled"
+            pdfView?.needsDisplay = true
+            pdfView?.refreshInteractionAppearance()
+            return
+        }
+        activeTextEdit = nil
+        if session.isNew {
+            session.page.removeAnnotation(annotation)
+            if let cover = session.cover { session.page.removeAnnotation(cover) }
+            unlink(text: annotation)
+            selectedAnnotation = nil
+        } else {
+            annotation.contents = session.contents
+            annotation.font = session.font
+            annotation.bounds = session.bounds
+            if let cover = session.cover, let coverBounds = session.coverBounds { cover.bounds = coverBounds }
+        }
+        isDirty = session.wasDirtyBefore
+        statusMessage = session.isNew ? "Text edit discarded" : "Text editing cancelled"
+        pdfView?.needsDisplay = true
+        pdfView?.refreshInteractionAppearance()
+        objectWillChange.send()
+    }
+
+    /// Keeps the first baseline fixed while the point size changes, so resized text stays
+    /// on the line it replaced instead of drifting down the page.
+    func applyTextFont(_ font: NSFont, to annotation: PDFAnnotation) {
+        let baseline = FreeTextLayout.baseline(of: annotation)
+        annotation.font = font
+        if let baseline, annotation.isSubtype(.freeText) {
+            let bounds = annotation.bounds
+            let top = FreeTextLayout.topEdge(forBaseline: baseline, font: font)
+            annotation.bounds = CGRect(
+                x: bounds.minX,
+                y: bounds.minY,
+                width: bounds.width,
+                height: max(4, top - bounds.minY)
+            )
+        }
+        retainCover(for: annotation)
+    }
+
+    func setSelectedTextColor(_ color: Color) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText) else { return }
+        let newColor = NSColor(color)
+        let oldColor = annotation.fontColor ?? .black
+        selectedTextColor = color
+        guard oldColor != newColor else { return }
+        let wasDirty = isDirty
+        annotation.fontColor = newColor
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { annotation.fontColor = oldColor },
+            redo: { annotation.fontColor = newColor }
+        )
+        changed("Text color updated")
+    }
+
+    func setSelectedTextBackground(_ color: Color) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText) else { return }
+        let target = linkedCover(for: annotation) ?? annotation
+        let newColor = NSColor(color)
+        let oldFill = target.interiorColor
+        let oldColor = target.color
+        selectedTextBackground = color
+        let wasDirty = isDirty
+        let apply: (NSColor?, NSColor) -> Void = { fill, stroke in
+            if target === annotation {
+                target.color = stroke
+            } else {
+                target.interiorColor = fill
+                target.color = stroke
+            }
+        }
+        apply(newColor, newColor)
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { apply(oldFill, oldColor) },
+            redo: { apply(newColor, newColor) }
+        )
+        changed("Background updated")
+    }
+
+    func setSelectedTextAlignment(_ alignment: NSTextAlignment) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText) else { return }
+        let oldAlignment = annotation.alignment
+        selectedTextAlignment = alignment
+        guard oldAlignment != alignment else { return }
+        let wasDirty = isDirty
+        annotation.alignment = alignment
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { annotation.alignment = oldAlignment },
+            redo: { annotation.alignment = alignment }
+        )
+        changed("Alignment updated")
+    }
+
+    // MARK: - Replacement pairing
+
+    func linkedCover(for annotation: PDFAnnotation) -> PDFAnnotation? {
+        coversByText[ObjectIdentifier(annotation)]?.cover
+    }
+
+    func textAnnotation(forCover cover: PDFAnnotation) -> PDFAnnotation? {
+        textsByCover[ObjectIdentifier(cover)]
+    }
+
+    /// Moves and scales the opaque rectangle with the replacement it belongs to. The
+    /// rectangle is never recomputed from the font: it has to keep hiding the original
+    /// run of page text even when the replacement reflows to a smaller size.
+    func synchronizeCover(for annotation: PDFAnnotation) {
+        guard let link = coversByText[ObjectIdentifier(annotation)] else { return }
+        let old = link.alignedTextBounds
+        let new = annotation.bounds
+        defer { link.alignedTextBounds = new }
+        guard old != new, old.width > 0, old.height > 0 else { return }
+        let scaleX = new.width / old.width
+        let scaleY = new.height / old.height
+        let cover = link.cover.bounds
+        link.cover.bounds = CGRect(
+            x: new.minX + (cover.minX - old.minX) * scaleX,
+            y: new.minY + (cover.minY - old.minY) * scaleY,
+            width: cover.width * scaleX,
+            height: cover.height * scaleY
+        )
+    }
+
+    /// Records a reflow that must leave the opaque rectangle where it is.
+    private func retainCover(for annotation: PDFAnnotation) {
+        coversByText[ObjectIdentifier(annotation)]?.alignedTextBounds = annotation.bounds
+    }
+
+    private func link(cover: PDFAnnotation, to text: PDFAnnotation) {
+        coversByText[ObjectIdentifier(text)] = CoverLink(cover: cover, alignedTextBounds: text.bounds)
+        textsByCover[ObjectIdentifier(cover)] = text
+    }
+
+    private func unlink(text: PDFAnnotation) {
+        if let link = coversByText.removeValue(forKey: ObjectIdentifier(text)) {
+            textsByCover.removeValue(forKey: ObjectIdentifier(link.cover))
+        }
+    }
+
+    private func rebuildTextReplacementLinks() {
+        coversByText.removeAll()
+        textsByCover.removeAll()
+        guard let document = pdfDocument else { return }
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            var groups: [String: (text: PDFAnnotation?, cover: PDFAnnotation?)] = [:]
+            for annotation in page.annotations where TextEditMarker.isTextEdit(annotation) {
+                guard let key = annotation.userName else { continue }
+                var group = groups[key] ?? (nil, nil)
+                if annotation.isSubtype(.freeText) {
+                    group.text = annotation
+                } else {
+                    group.cover = annotation
+                }
+                groups[key] = group
+            }
+            for group in groups.values {
+                guard let text = group.text, let cover = group.cover else { continue }
+                link(cover: cover, to: text)
+            }
+        }
+    }
+
     func importSignatureImage() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.png, .jpeg, .tiff, .heic]
@@ -1051,6 +1471,11 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func activateSelectTool() {
+        if let session = activeTextEdit {
+            pdfView?.cancelInlineTextEditing()
+            cancelTextReplacement(session.annotation)
+            return
+        }
         if pendingNewNote != nil {
             cancelNoteEditing()
             return
@@ -1070,6 +1495,7 @@ final class PDFWorkspace: ObservableObject {
             activateSelectTool()
             return
         }
+        finishActiveTextEditing()
         selectAnnotation(nil)
         activeTool = tool
         pdfView?.cancelActiveInteraction()
@@ -1231,10 +1657,12 @@ final class PDFWorkspace: ObservableObject {
         wasDirtyBefore: Bool
     ) {
         guard oldBounds != newBounds || !pathsEqual(oldPaths, newPaths) else { return }
-        registerEdit(wasDirtyBefore: wasDirtyBefore, undo: {
+        registerEdit(wasDirtyBefore: wasDirtyBefore, undo: { [weak self] in
             applyGeometry(to: annotation, bounds: oldBounds, paths: oldPaths)
-        }, redo: {
+            self?.synchronizeCover(for: annotation)
+        }, redo: { [weak self] in
             applyGeometry(to: annotation, bounds: newBounds, paths: newPaths)
+            self?.synchronizeCover(for: annotation)
         })
     }
 
@@ -1287,6 +1715,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func flushTemporaryAutosave() {
+        finishActiveTextEditing()
         temporaryAutosaveWorkItem?.cancel()
         temporaryAutosaveWorkItem = nil
         guard preferences.temporaryAutosave, isDirty, let document = pdfDocument else { return }
@@ -1378,6 +1807,8 @@ final class PDFWorkspace: ObservableObject {
 
         recoveryIdentifier = record.identifier
         pdfDocument = document
+        activeTextEdit = nil
+        rebuildTextReplacementLinks()
         if let path = record.originalPath, FileManager.default.fileExists(atPath: path) {
             fileURL = URL(fileURLWithPath: path)
         } else {
