@@ -1,17 +1,6 @@
 import AppKit
 import SwiftUI
 
-private struct PDFWorkspaceFocusedKey: FocusedValueKey {
-    typealias Value = PDFWorkspace
-}
-
-extension FocusedValues {
-    var pdfWorkspace: PDFWorkspace? {
-        get { self[PDFWorkspaceFocusedKey.self] }
-        set { self[PDFWorkspaceFocusedKey.self] = newValue }
-    }
-}
-
 @main
 struct ZZPDFApp: App {
     @StateObject private var preferences = AppPreferences()
@@ -47,7 +36,7 @@ private struct DocumentWindow: View {
         ContentView()
             .environmentObject(workspace)
             .environmentObject(preferences)
-            .focusedSceneValue(\.pdfWorkspace, workspace)
+            .focusedSceneObject(workspace)
             .frame(minWidth: 980, minHeight: 680)
             .background(DocumentWindowAccessor(workspace: workspace, registry: registry))
             .onAppear {
@@ -64,7 +53,7 @@ private struct DocumentWindow: View {
 
 struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
-    @FocusedValue(\.pdfWorkspace) private var document
+    @FocusedObject private var document: PDFWorkspace?
     @ObservedObject var registry: WorkspaceRegistry
 
     var body: some Commands {
@@ -112,6 +101,11 @@ struct AppCommands: Commands {
             Button("Export Flattened Copy…") { document?.exportFlattened() }
                 .disabled(document?.hasDocument != true)
             Button("Export Protected Copy…") { document?.showPasswordExport = true }
+                .disabled(document?.hasDocument != true)
+        }
+        CommandGroup(replacing: .printItem) {
+            Button("Print…") { document?.printDocument() }
+                .keyboardShortcut("p", modifiers: [.command])
                 .disabled(document?.hasDocument != true)
         }
         CommandMenu("Pages") {

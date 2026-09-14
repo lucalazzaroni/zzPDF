@@ -263,6 +263,26 @@ final class PDFWorkspace: ObservableObject {
         _ = saveAsDocument()
     }
 
+    func makePrintOperation(using printInfo: NSPrintInfo = .shared) -> NSPrintOperation? {
+        guard let document = pdfDocument else { return nil }
+        let operation = document.printOperation(
+            for: printInfo,
+            scalingMode: .pageScaleToFit,
+            autoRotate: true
+        )
+        operation?.showsPrintPanel = true
+        operation?.showsProgressPanel = true
+        return operation
+    }
+
+    func printDocument() {
+        guard let operation = makePrintOperation() else {
+            presentError("The document could not be prepared for printing.")
+            return
+        }
+        operation.run()
+    }
+
     @discardableResult
     private func saveAsDocument() -> Bool {
         guard let document = pdfDocument,
