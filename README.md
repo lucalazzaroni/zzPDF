@@ -73,6 +73,18 @@ The default signature is an ad hoc local signature suitable for development and 
 ZZPDF_SDK_PATH="$(xcrun --sdk macosx --show-sdk-path)" ./build-app.sh
 ```
 
+## Tests
+
+Each check under `Tests/` is a standalone program compiled together with the application sources. Run them all, or name the ones you want:
+
+```bash
+./scripts/run-tests.sh
+```
+
+```bash
+./scripts/run-tests.sh RedactionSmoke TextEditSmoke
+```
+
 ## Local Installation
 
 Open `outputs/zzPDF-macOS.zip`, then drag `zzPDF.app` to the Applications folder.
@@ -88,6 +100,8 @@ Sources/zzPDF/       application UI and PDF logic
 AppResources/        Info.plist and app icon
 build-app.sh         release build and app packaging
 scripts/notarize.sh  notarization of a Developer ID build
+scripts/run-tests.sh builds and runs every standalone smoke test
+scripts/select-sdk.sh picks a macOS SDK that can compile SwiftUI
 Tests/InkResizeSmoke/ standalone Ink path-resize regression check
 Tests/FormOverlaySmoke/ standalone interactive form-overlay regression check
 Tests/RecoverySmoke/    standalone temporary autosave and recovery regression check
