@@ -352,6 +352,14 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         for overlay in pageOverlays.values { overlay.detachInlineEditing() }
     }
 
+    func undoTypingInInlineEditor() -> Bool {
+        activeInlineEditor?.undoTyping() ?? false
+    }
+
+    func redoTypingInInlineEditor() -> Bool {
+        activeInlineEditor?.redoTyping() ?? false
+    }
+
     var activeInlineEditor: PDFInlineTextEditor? {
         pageOverlays.values.compactMap(\.inlineEditor).first
     }

@@ -223,8 +223,8 @@ final class PDFWorkspace: ObservableObject {
     var selectedAnnotationIsFreeText: Bool {
         selectedAnnotation?.isSubtype(.freeText) == true
     }
-    var canUndo: Bool { !undoActions.isEmpty || pdfView?.undoManager?.canUndo == true }
-    var canRedo: Bool { !redoActions.isEmpty || pdfView?.undoManager?.canRedo == true }
+    var canUndo: Bool { !undoActions.isEmpty }
+    var canRedo: Bool { !redoActions.isEmpty }
 
     init(
         preferences: AppPreferences = AppPreferences(),
@@ -2209,9 +2209,15 @@ final class PDFWorkspace: ObservableObject {
         objectWillChange.send()
     }
 
+    /// Undo and redo run off this workspace's own history and nothing else. The window's
+    /// undo manager collects operations the workspace knows nothing about — PDFKit's
+    /// markup mode registers its own annotation edits there, and so does every text view
+    /// in the window — and replaying those changed the document behind the workspace's
+    /// back, or threw outright when a group was still open.
     func undo() {
+        if pdfView?.undoTypingInInlineEditor() == true { return }
         guard let action = undoActions.popLast() else {
-            pdfView?.undoManager?.undo()
+            statusMessage = "Nothing left to undo"
             return
         }
         action.undo()
@@ -2221,8 +2227,9 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func redo() {
+        if pdfView?.redoTypingInInlineEditor() == true { return }
         guard let action = redoActions.popLast() else {
-            pdfView?.undoManager?.redo()
+            statusMessage = "Nothing left to redo"
             return
         }
         action.redo()

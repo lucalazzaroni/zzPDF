@@ -9,6 +9,9 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
     private var pdfFont: NSFont = .systemFont(ofSize: 12)
     private var singleLine = false
     private var didFinish = false
+    /// Typing history stays with the editor instead of going to the window, where the
+    /// document's own undo would end up replaying it.
+    private let typingUndoManager = UndoManager()
     private var restoresAnnotationVisibility = false
 
     /// The point size the editor is actually drawing with, for tests and diagnostics.
@@ -79,6 +82,22 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
     }
 
     /// Closes the editor without reporting back, for when the edit is being finished elsewhere.
+    /// Handles Cmd-Z while the editor is open. Returns true whenever an editor is on
+    /// screen, so the shortcut never falls through to the document's history mid-edit.
+    func undoTyping() -> Bool {
+        if typingUndoManager.canUndo { typingUndoManager.undo() }
+        return true
+    }
+
+    func redoTyping() -> Bool {
+        if typingUndoManager.canRedo { typingUndoManager.redo() }
+        return true
+    }
+
+    func undoManager(for view: NSTextView) -> UndoManager? {
+        typingUndoManager
+    }
+
     func detach() {
         guard !didFinish else { return }
         didFinish = true
