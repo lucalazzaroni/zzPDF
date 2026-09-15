@@ -4,7 +4,7 @@ import SwiftUI
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
-    case select, fillForms, editText, highlight, underline, strikeOut, note, text, draw, rectangle, oval, redact, signature
+    case select, fillForms, editText, highlight, underline, strikeOut, note, text, draw, line, arrow, polygon, rectangle, oval, redact, signature
 
     var id: String { rawValue }
     var label: String {
@@ -18,6 +18,9 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .note: "Note"
         case .text: "Text"
         case .draw: "Draw"
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .polygon: "Polygon"
         case .rectangle: "Rectangle"
         case .oval: "Ellipse"
         case .redact: "Redact"
@@ -35,12 +38,17 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .note: "note.text"
         case .text: "textformat"
         case .draw: "pencil.tip"
+        case .line: "line.diagonal"
+        case .arrow: "line.diagonal.arrow"
+        case .polygon: "pentagon"
         case .rectangle: "rectangle"
         case .oval: "circle"
         case .redact: "eye.slash"
         case .signature: "signature"
         }
     }
+
+    var isLineTool: Bool { self == .line || self == .arrow }
 
     var markupKind: MarkupKind? {
         switch self {
@@ -119,6 +127,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var pdfDocument: PDFDocument?
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
+    @Published var selectedPageIndexes: Set<Int> = [0]
     @Published var selectedAnnotation: PDFAnnotation?
     @Published var hasTextSelection = false
     @Published var activeTool: CanvasTool = .select
@@ -136,6 +145,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var selectedTextColor: Color = .black
     @Published var selectedTextBackground: Color = .white
     @Published var selectedTextAlignment: NSTextAlignment = .left
+    @Published var selectedTextFontFamily = "Helvetica"
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
@@ -152,6 +162,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var freeTextDraftText = ""
     @Published var freeTextDraftFontSize: Double = 15
     @Published var statusMessage = "Open a PDF to get started"
+    @Published private(set) var isRecognizingText = false
     @Published var isDirty = false {
         didSet {
             if isDirty {
@@ -161,8 +172,14 @@ final class PDFWorkspace: ObservableObject {
             }
         }
     }
-    @Published var savedSignature: [[CGPoint]] = []
-    @Published var signatureImage: NSImage?
+    @Published var savedSignature: [[CGPoint]] = [] {
+        didSet { preferences.signatureStrokes = savedSignature }
+    }
+    @Published var signatureImage: NSImage? {
+        didSet { preferences.signatureImageData = signatureImage?.pngData }
+    }
+    /// True when the document on disk asked for a password to open.
+    @Published private(set) var isPasswordProtected = false
 
     let preferences: AppPreferences
     private let recoveryStore: TemporaryRecoveryStore
@@ -224,6 +241,8 @@ final class PDFWorkspace: ObservableObject {
         textFontSize = preferences.textFontSize
         shapeHasFill = preferences.shapeHasFill
         shapeFillColor = preferences.shapeFillColor
+        savedSignature = preferences.signatureStrokes
+        if let data = preferences.signatureImageData { signatureImage = NSImage(data: data) }
         self.recoveryStore.reserve(recoveryIdentifier)
     }
 
@@ -245,16 +264,20 @@ final class PDFWorkspace: ObservableObject {
             presentError("The document could not be opened.")
             return
         }
+        var wasLocked = false
         if document.isLocked {
             let password = requestPassword(title: "Protected PDF", message: "Enter the password to open this document.")
             guard let password, document.unlock(withPassword: password) else {
                 presentError("Invalid password.")
                 return
             }
+            wasLocked = true
         }
         prepareToReplaceCurrentDocument()
         pdfDocument = document
         fileURL = url
+        isPasswordProtected = wasLocked
+        preferences.noteRecentDocument(url)
         currentPageIndex = 0
         activeTool = preferences.initialTool
         pageLayout = preferences.defaultPageLayout
@@ -405,6 +428,23 @@ final class PDFWorkspace: ObservableObject {
         }
     }
 
+    /// Writes a copy with the encryption removed, for a document the user has already
+    /// unlocked with its password.
+    func removePasswordProtection() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        guard isPasswordProtected else {
+            statusMessage = "This document is not password protected"
+            return
+        }
+        guard let url = chooseSaveURL(defaultName: "\(displayName)-unprotected.pdf") else { return }
+        if document.write(to: url) {
+            statusMessage = "Unprotected copy saved"
+        } else {
+            presentError("The unprotected copy could not be written.")
+        }
+    }
+
     func mergePDF() {
         guard let document = pdfDocument else { return }
         let panel = NSOpenPanel()
@@ -449,11 +489,16 @@ final class PDFWorkspace: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.message = "Each image will become a page"
         guard panel.runModal() == .OK else { return }
+        addImageFiles(panel.urls)
+    }
+
+    func addImageFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
         let wasDirty = isDirty
         let hadDocument = pdfDocument != nil
         let destination = pdfDocument ?? PDFDocument()
         var inserted: [(PDFPage, Int)] = []
-        for url in panel.urls {
+        for url in urls {
             if let image = NSImage(contentsOf: url), let page = PDFPage(image: image) {
                 let index = destination.pageCount
                 destination.insert(page, at: index)
@@ -486,12 +531,278 @@ final class PDFWorkspace: ObservableObject {
         if output.write(to: url) { statusMessage = "Page extracted" }
     }
 
+    // MARK: - Navigating the document
+
+    var outlineRoot: PDFOutline? {
+        guard let root = pdfDocument?.outlineRoot, root.numberOfChildren > 0 else { return nil }
+        return root
+    }
+
+    func goToOutline(_ outline: PDFOutline) {
+        if let destination = outline.destination {
+            pdfView?.go(to: destination)
+        } else if let action = outline.action as? PDFActionGoTo {
+            pdfView?.go(to: action.destination)
+        } else {
+            return
+        }
+        if let page = pdfView?.currentPage, let document = pdfDocument {
+            currentPageIndex = document.index(for: page)
+        }
+        statusMessage = outline.label ?? "Section"
+    }
+
+    /// Every annotation in the document, in reading order, for the sidebar list.
+    func annotationEntries() -> [AnnotationEntry] {
+        guard let document = pdfDocument else { return [] }
+        var entries: [AnnotationEntry] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations {
+                // Form fields, the document's own hyperlinks, the popup PDFKit pairs with
+                // every note, and the backdrop behind replaced text are not things the
+                // reader annotated, so they stay out of the list.
+                guard !annotation.isSubtype(.widget),
+                      !annotation.isSubtype(.popup),
+                      !annotation.isSubtype(.link),
+                      !isTextReplacementCover(annotation) else { continue }
+                entries.append(AnnotationEntry(annotation: annotation, pageIndex: index))
+            }
+        }
+        return entries
+    }
+
+    private func isTextReplacementCover(_ annotation: PDFAnnotation) -> Bool {
+        textAnnotation(forCover: annotation) != nil
+    }
+
+    func reveal(_ annotation: PDFAnnotation) {
+        guard let page = annotation.page, let document = pdfDocument else { return }
+        currentPageIndex = document.index(for: page)
+        pdfView?.go(to: annotation.bounds, on: page)
+        selectAnnotation(annotation)
+        rememberCurrentView()
+    }
+
     func selectPage(_ index: Int) {
         guard let document = pdfDocument, index >= 0, index < document.pageCount,
               let page = document.page(at: index) else { return }
         currentPageIndex = index
+        selectedPageIndexes = [index]
         pdfView?.go(to: page)
         rememberCurrentView()
+    }
+
+    // MARK: - Working on several pages at once
+
+    func isPageSelected(_ index: Int) -> Bool {
+        selectedPageIndexes.contains(index) || (selectedPageIndexes.isEmpty && index == currentPageIndex)
+    }
+
+    func togglePageSelection(_ index: Int) {
+        if selectedPageIndexes.contains(index) {
+            selectedPageIndexes.remove(index)
+            if selectedPageIndexes.isEmpty { selectedPageIndexes = [currentPageIndex] }
+        } else {
+            selectedPageIndexes.insert(index)
+        }
+    }
+
+    func extendPageSelection(to index: Int) {
+        let range = min(currentPageIndex, index)...max(currentPageIndex, index)
+        selectedPageIndexes = Set(range)
+    }
+
+    /// The pages an action applies to: the multiple selection when there is one, and the
+    /// page being viewed otherwise.
+    var targetPageIndexes: [Int] {
+        let indexes = selectedPageIndexes.isEmpty ? [currentPageIndex] : Array(selectedPageIndexes)
+        return indexes.filter { $0 >= 0 && $0 < pageCount }.sorted()
+    }
+
+    func reorderPage(from source: Int, to destination: Int) {
+        guard let document = pdfDocument, source != destination,
+              source >= 0, source < document.pageCount,
+              destination >= 0, destination < document.pageCount,
+              let page = document.page(at: source) else { return }
+        let wasDirty = isDirty
+        movePage(page, in: document, to: destination)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            movePage(page, in: document, to: source)
+        }, redo: {
+            movePage(page, in: document, to: destination)
+        })
+        currentPageIndex = destination
+        selectedPageIndexes = [destination]
+        changed("Page moved")
+    }
+
+    func rotateSelectedPages(by degrees: Int) {
+        guard let document = pdfDocument else { return }
+        let pages = targetPageIndexes.compactMap { document.page(at: $0) }
+        guard !pages.isEmpty else { return }
+        let wasDirty = isDirty
+        let rotate: (Int) -> Void = { amount in
+            for page in pages { page.rotation = (page.rotation + amount + 360) % 360 }
+        }
+        rotate(degrees)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { rotate(-degrees) }, redo: { rotate(degrees) })
+        changed(pages.count == 1 ? "Page rotated" : "\(pages.count) pages rotated")
+    }
+
+    func duplicateSelectedPages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let wasDirty = isDirty
+        var copies: [(page: PDFPage, index: Int)] = []
+        for (offset, index) in indexes.enumerated() {
+            guard let copy = document.page(at: index + offset)?.copy() as? PDFPage else { continue }
+            let destination = index + offset + 1
+            document.insert(copy, at: destination)
+            copies.append((copy, destination))
+        }
+        guard !copies.isEmpty else { return }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for copy in copies.reversed() { removePage(copy.page, from: document) }
+        }, redo: {
+            for copy in copies where document.index(for: copy.page) == NSNotFound {
+                document.insert(copy.page, at: min(copy.index, document.pageCount))
+            }
+        })
+        selectedPageIndexes = Set(copies.map(\.index))
+        changed(copies.count == 1 ? "Page duplicated" : "\(copies.count) pages duplicated")
+    }
+
+    func deleteSelectedPages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        guard document.pageCount > indexes.count else {
+            statusMessage = "A document needs at least one page"
+            return
+        }
+        if preferences.confirmPageDeletion {
+            let message = indexes.count == 1
+                ? "You can undo this action with Command-Z."
+                : "\(indexes.count) pages will be removed. You can undo this action with Command-Z."
+            guard confirmAction(title: indexes.count == 1 ? "Delete Page?" : "Delete Pages?", message: message) else { return }
+        }
+        let wasDirty = isDirty
+        let removed: [(page: PDFPage, index: Int)] = indexes.compactMap { index in
+            guard let page = document.page(at: index) else { return nil }
+            return (page, index)
+        }
+        for entry in removed.reversed() { removePage(entry.page, from: document) }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for entry in removed { document.insert(entry.page, at: min(entry.index, document.pageCount)) }
+        }, redo: {
+            for entry in removed.reversed() { removePage(entry.page, from: document) }
+        })
+        currentPageIndex = max(0, min(indexes[0], document.pageCount - 1))
+        selectedPageIndexes = [currentPageIndex]
+        changed(removed.count == 1 ? "Page deleted" : "\(removed.count) pages deleted")
+        if document.pageCount > 0 { selectPage(currentPageIndex) }
+    }
+
+    @discardableResult
+    func writeSmallerCopy(to url: URL) -> Bool {
+        guard let document = pdfDocument else { return false }
+        return document.write(to: url, withOptions: [
+            .saveImagesAsJPEGOption: true,
+            .optimizeImagesForScreenOption: true
+        ])
+    }
+
+    /// Writes each selected page as a PNG, for slides, e-mail, or anything that wants a
+    /// picture rather than a PDF.
+    func exportPagesAsImages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = indexes.count == 1 ? "Choose where to save the image" : "Choose where to save the images"
+        if !preferences.exportFolderPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: preferences.exportFolderPath)
+        }
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let written = writePageImages(to: folder)
+        guard written > 0 else {
+            presentError("The pages could not be exported as images.")
+            return
+        }
+        statusMessage = written == 1 ? "Image exported" : "\(written) images exported"
+        _ = document
+    }
+
+    @discardableResult
+    func writePageImages(to folder: URL, dpi: CGFloat = 200) -> Int {
+        guard let document = pdfDocument else { return 0 }
+        var written = 0
+        for index in targetPageIndexes {
+            guard let page = document.page(at: index),
+                  let rendered = OCRTextLayer.render(page, dpi: dpi),
+                  let data = NSBitmapImageRep(cgImage: rendered.image).representation(using: .png, properties: [:])
+            else { continue }
+            let url = folder.appendingPathComponent("\(displayName)-\(index + 1).png")
+            if (try? data.write(to: url, options: .atomic)) != nil { written += 1 }
+        }
+        return written
+    }
+
+    /// Writes a copy with images recompressed for screen use, and says how much it saved.
+    func exportSmallerCopy() {
+        finishActiveTextEditing()
+        guard pdfDocument != nil,
+              let url = chooseSaveURL(defaultName: "\(displayName)-smaller.pdf") else { return }
+        guard writeSmallerCopy(to: url) else {
+            presentError("The smaller copy could not be written.")
+            return
+        }
+        let newSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let oldSize = fileURL.flatMap { (try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) } ?? 0
+        let formatter = ByteCountFormatter()
+        if oldSize > 0, newSize > 0, newSize < oldSize {
+            let saved = Int(((1 - Double(newSize) / Double(oldSize)) * 100).rounded())
+            statusMessage = "Smaller copy saved: \(formatter.string(fromByteCount: Int64(newSize))), \(saved)% less"
+        } else {
+            statusMessage = "Copy saved: \(formatter.string(fromByteCount: Int64(newSize)))"
+        }
+    }
+
+    func extractSelectedPages() {
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let name = indexes.count == 1
+            ? "Page-\(indexes[0] + 1).pdf"
+            : "\(displayName)-pages.pdf"
+        guard let url = chooseSaveURL(defaultName: name) else { return }
+        guard writeSelectedPages(to: url) else {
+            presentError("The pages could not be extracted.")
+            return
+        }
+        statusMessage = indexes.count == 1 ? "Page extracted" : "\(indexes.count) pages extracted"
+    }
+
+    @discardableResult
+    func writeSelectedPages(to url: URL) -> Bool {
+        guard let document = pdfDocument else { return false }
+        let output = PDFDocument()
+        for index in targetPageIndexes {
+            guard let page = document.page(at: index)?.copy() as? PDFPage else { continue }
+            output.insert(page, at: output.pageCount)
+        }
+        guard output.pageCount > 0 else { return false }
+        return output.write(to: url)
+    }
+
+    func remove(_ annotation: PDFAnnotation) {
+        selectAnnotation(annotation)
+        removeSelectedAnnotation()
     }
 
     func moveCurrentPage(by offset: Int) {
@@ -577,7 +888,9 @@ final class PDFWorkspace: ObservableObject {
             case .strikeOut: subtype = .strikeOut
             }
             let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
-            annotation.color = kind == .highlight ? NSColor.systemYellow.withAlphaComponent(0.45) : nsAnnotationColor
+            annotation.color = kind == .highlight
+                ? nsAnnotationColor.highlightTint(alpha: preferences.highlightOpacity)
+                : nsAnnotationColor
             page.addAnnotation(annotation)
             additions.append((page, annotation))
         }
@@ -614,6 +927,12 @@ final class PDFWorkspace: ObservableObject {
             item.fontColor = color
             item.color = .clear
             annotation = item
+        case .polygon:
+            return
+        case .line, .arrow:
+            guard let first = dragPoints.first, let last = dragPoints.last,
+                  hypot(last.x - first.x, last.y - first.y) > 3 else { return }
+            annotation = makeLineAnnotation(from: first, to: last, color: color, arrow: tool == .arrow)
         case .rectangle, .oval:
             let rect = normalizedBounds(from: dragPoints, fallback: point, size: CGSize(width: 130, height: 80))
             let item = PDFAnnotation(bounds: rect, forType: tool == .rectangle ? .square : .circle, withProperties: nil)
@@ -686,6 +1005,45 @@ final class PDFWorkspace: ObservableObject {
             y: min(max(point.y - 20, pageBounds.minY), maximumY)
         )
         return CGRect(origin: origin, size: size)
+    }
+
+    /// PDFKit reads a line annotation's endpoints relative to its own bounds, not to the
+    /// page, so both are stored as offsets inside the padded rectangle.
+    private func makeLineAnnotation(from start: CGPoint, to end: CGPoint, color: NSColor, arrow: Bool) -> PDFAnnotation {
+        let padding = max(12, lineWidth * 4)
+        let bounds = CGRect(
+            x: min(start.x, end.x) - padding,
+            y: min(start.y, end.y) - padding,
+            width: abs(end.x - start.x) + padding * 2,
+            height: abs(end.y - start.y) + padding * 2
+        )
+        let item = PDFAnnotation(bounds: bounds, forType: .line, withProperties: nil)
+        item.startPoint = CGPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
+        item.endPoint = CGPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
+        if arrow { item.endLineStyle = .closedArrow }
+        item.color = color
+        let border = PDFBorder()
+        border.lineWidth = lineWidth
+        item.border = border
+        return item
+    }
+
+    /// Polygons are drawn as straight-segment ink: PDFKit has no polygon annotation, and
+    /// ink already moves, scales, and flattens correctly.
+    func addPolygon(points: [CGPoint], on page: PDFPage, closed: Bool) {
+        guard points.count > 1 else { return }
+        var vertices = points
+        if closed, let first = points.first { vertices.append(first) }
+        guard let annotation = makeInkAnnotation(points: vertices, color: nsAnnotationColor, width: lineWidth) else { return }
+        let wasDirty = isDirty
+        page.addAnnotation(annotation)
+        selectAnnotation(annotation)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            page.removeAnnotation(annotation)
+        }, redo: {
+            page.addAnnotation(annotation)
+        })
+        changed(closed ? "Polygon added" : "Polyline added")
     }
 
     private func makeInkAnnotation(points: [CGPoint], color: NSColor, width: Double) -> PDFAnnotation? {
@@ -780,6 +1138,7 @@ final class PDFWorkspace: ObservableObject {
         guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
         selectedTextFontSize = Double(annotation.font?.pointSize ?? 15)
         selectedTextColor = Color(nsColor: annotation.fontColor ?? .black)
+        selectedTextFontFamily = annotation.font?.familyName ?? "Helvetica"
         selectedTextAlignment = annotation.alignment
         let background = linkedCover(for: annotation)?.interiorColor ?? annotation.color
         selectedTextBackground = Color(nsColor: background)
@@ -898,6 +1257,12 @@ final class PDFWorkspace: ObservableObject {
         annotationDraftText = annotation.contents ?? ""
         noteOriginalText = annotationDraftText
         showNoteEditor = true
+    }
+
+    /// Saves the note being edited with the given text, the way the note sheet does.
+    func commitNoteEditing(text: String) {
+        annotationDraftText = text
+        commitSelectedNote()
     }
 
     func commitSelectedNote() {
@@ -1343,6 +1708,62 @@ final class PDFWorkspace: ObservableObject {
         changed("Background updated")
     }
 
+    var selectedTextIsBold: Bool { selectedTextHasTrait(.boldFontMask) }
+    var selectedTextIsItalic: Bool { selectedTextHasTrait(.italicFontMask) }
+
+    private func selectedTextHasTrait(_ trait: NSFontTraitMask) -> Bool {
+        guard let font = selectedAnnotation?.font else { return false }
+        return NSFontManager.shared.traits(of: font).contains(trait)
+    }
+
+    func setSelectedTextFontFamily(_ family: String) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText),
+              let current = annotation.font else { return }
+        selectedTextFontFamily = family
+        let manager = NSFontManager.shared
+        guard let replacement = manager.font(
+            withFamily: family,
+            traits: manager.traits(of: current),
+            weight: manager.weight(of: current),
+            size: current.pointSize
+        ), replacement.fontName != current.fontName else { return }
+        applyFontChange(replacement, to: annotation, message: "Font changed")
+    }
+
+    func toggleSelectedTextTrait(bold: Bool) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText),
+              let current = annotation.font else { return }
+        let manager = NSFontManager.shared
+        let trait: NSFontTraitMask = bold ? .boldFontMask : .italicFontMask
+        let replacement = manager.traits(of: current).contains(trait)
+            ? manager.convert(current, toNotHaveTrait: trait)
+            : manager.convert(current, toHaveTrait: trait)
+        guard replacement.fontName != current.fontName else {
+            statusMessage = bold ? "This font has no bold" : "This font has no italic"
+            return
+        }
+        applyFontChange(replacement, to: annotation, message: bold ? "Bold toggled" : "Italic toggled")
+    }
+
+    private func applyFontChange(_ font: NSFont, to annotation: PDFAnnotation, message: String) {
+        let oldFont = annotation.font
+        let oldBounds = annotation.bounds
+        let wasDirty = isDirty
+        applyTextFont(font, to: annotation)
+        let newBounds = annotation.bounds
+        registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
+            annotation.font = oldFont
+            annotation.bounds = oldBounds
+            self?.retainCoverBounds(for: annotation)
+        }, redo: { [weak self] in
+            annotation.font = font
+            annotation.bounds = newBounds
+            self?.retainCoverBounds(for: annotation)
+        })
+        synchronizeSelectedTextAppearance()
+        changed(message)
+    }
+
     func setSelectedTextAlignment(_ alignment: NSTextAlignment) {
         guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText) else { return }
         let oldAlignment = annotation.alignment
@@ -1386,6 +1807,10 @@ final class PDFWorkspace: ObservableObject {
             width: cover.width * scaleX,
             height: cover.height * scaleY
         )
+    }
+
+    func retainCoverBounds(for annotation: PDFAnnotation) {
+        retainCover(for: annotation)
     }
 
     /// Records a reflow that must leave the opaque rectangle where it is.
@@ -1440,6 +1865,12 @@ final class PDFWorkspace: ObservableObject {
         showSignaturePad = false
         pdfView?.needsDisplay = true
         statusMessage = "Signature image ready: click the page to place it"
+    }
+
+    func forgetSignature() {
+        savedSignature = []
+        signatureImage = nil
+        statusMessage = "Signature cleared"
     }
 
     func useDrawnSignature(_ strokes: [[CGPoint]]) {
@@ -1498,7 +1929,6 @@ final class PDFWorkspace: ObservableObject {
 
     func setPageLayout(_ layout: PageLayoutMode) {
         pageLayout = layout
-        preferences.defaultPageLayout = layout
         pdfView?.displayMode = layout.pdfMode
         pdfView?.autoScales = true
         rememberCurrentView()
@@ -1553,20 +1983,35 @@ final class PDFWorkspace: ObservableObject {
         guard !didAttemptSessionRestore else { return }
         didAttemptSessionRestore = true
         if restoreTemporaryRecoveryIfAvailable() { return }
-        guard preferences.restoreLastDocument, let url = preferences.lastDocumentURL else { return }
+        guard preferences.restoreLastDocument,
+              let document = preferences.sessionDocuments.first else { return }
+        restoreSessionDocument(document)
+    }
+
+    /// Puts back one of the things the app had open when it last quit.
+    func restore(_ item: WorkspaceRegistry.RestoreItem) {
+        didAttemptSessionRestore = true
+        switch item {
+        case .recovery:
+            _ = restoreTemporaryRecoveryIfAvailable()
+        case .session(let document):
+            guard preferences.restoreLastDocument else { return }
+            restoreSessionDocument(document)
+        }
+    }
+
+    private func restoreSessionDocument(_ document: AppPreferences.SessionDocument) {
+        let url = document.url
         guard FileManager.default.fileExists(atPath: url.path) else {
-            preferences.forgetLastDocument()
+            preferences.forgetDocument(url)
             return
         }
-        let restoredPage = preferences.lastPageIndex
-        let restoredZoom = preferences.lastZoom
-        let restoredLayout = preferences.lastPageLayout
         load(url, rememberSession: false)
         guard pdfDocument != nil, fileURL == url else { return }
-        pageLayout = restoredLayout
-        currentPageIndex = max(0, min(restoredPage, pageCount - 1))
+        pageLayout = document.pageLayout
+        currentPageIndex = max(0, min(document.pageIndex, pageCount - 1))
         pendingRestoredPageIndex = currentPageIndex
-        pendingRestoredZoom = restoredZoom > 0 ? restoredZoom : nil
+        pendingRestoredZoom = document.zoom > 0 ? document.zoom : nil
         restoringViewState = true
         statusMessage = "Previous document restored"
     }
@@ -1597,6 +2042,7 @@ final class PDFWorkspace: ObservableObject {
 
     func recordCurrentPage(_ index: Int) {
         currentPageIndex = max(0, min(index, max(0, pageCount - 1)))
+        if selectedPageIndexes.count <= 1 { selectedPageIndexes = [currentPageIndex] }
         rememberCurrentView()
     }
 
@@ -1634,6 +2080,62 @@ final class PDFWorkspace: ObservableObject {
             zoom: zoom ?? Double(pdfView?.scaleFactor ?? 0),
             layout: pageLayout
         )
+    }
+
+    /// Runs OCR over every page that has no text and rebuilds those pages with an
+    /// invisible text layer, so the document becomes searchable everywhere it was a scan.
+    func makeDocumentSearchable() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument, !isRecognizingText else { return }
+        let targets = OCRTextLayer.scannedPageIndexes(in: document)
+        guard !targets.isEmpty else {
+            statusMessage = "Every page already has searchable text"
+            return
+        }
+        isRecognizingText = true
+        statusMessage = "Recognizing text on \(targets.count) page\(targets.count == 1 ? "" : "s")…"
+
+        Task { @MainActor in
+            var replacements: [(index: Int, original: PDFPage, recognized: PDFPage)] = []
+            for (position, index) in targets.enumerated() {
+                guard let page = document.page(at: index),
+                      let rendered = OCRTextLayer.render(page) else { continue }
+                statusMessage = "Recognizing text on page \(index + 1) (\(position + 1) of \(targets.count))…"
+                let image = rendered.image
+                let lines = await Task.detached(priority: .userInitiated) {
+                    OCRTextLayer.recognizedLines(in: image)
+                }.value
+                guard !lines.isEmpty,
+                      let recognized = OCRTextLayer.searchablePage(
+                        image: image,
+                        pointSize: rendered.pointSize,
+                        lines: lines
+                      ) else { continue }
+                replacements.append((index, page, recognized))
+            }
+
+            isRecognizingText = false
+            guard !replacements.isEmpty else {
+                statusMessage = "No text was recognized"
+                return
+            }
+            let wasDirty = isDirty
+            let apply: ([(index: Int, original: PDFPage, recognized: PDFPage)], Bool) -> Void = { items, searchable in
+                for item in items {
+                    guard item.index < document.pageCount else { continue }
+                    document.removePage(at: item.index)
+                    document.insert(searchable ? item.recognized : item.original, at: item.index)
+                }
+            }
+            apply(replacements, true)
+            let recorded = replacements
+            registerEdit(
+                wasDirtyBefore: wasDirty,
+                undo: { apply(recorded, false) },
+                redo: { apply(recorded, true) }
+            )
+            changed("\(replacements.count) page\(replacements.count == 1 ? "" : "s") made searchable")
+        }
     }
 
     func recognizeCurrentPage() {
@@ -1794,11 +2296,7 @@ final class PDFWorkspace: ObservableObject {
         if saving, !saveForClosing() { return false }
         sessionDiscarded = true
         clearTemporaryAutosave()
-        if let rememberedURL = preferences.lastDocumentURL,
-           let fileURL,
-           rememberedURL.standardizedFileURL == fileURL.standardizedFileURL {
-            preferences.forgetLastDocument()
-        }
+        if let fileURL { preferences.forgetDocument(fileURL) }
         return true
     }
 
@@ -1936,4 +2434,70 @@ private func applyGeometry(to annotation: PDFAnnotation, bounds: CGRect, paths: 
 private func pathsEqual(_ lhs: [NSBezierPath], _ rhs: [NSBezierPath]) -> Bool {
     guard lhs.count == rhs.count else { return false }
     return zip(lhs, rhs).allSatisfy { $0.0.bounds == $0.1.bounds && $0.0.elementCount == $0.1.elementCount }
+}
+
+extension NSImage {
+    var pngData: Data? {
+        guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
+}
+
+/// One row of the sidebar's annotation list.
+struct AnnotationEntry: Identifiable {
+    let annotation: PDFAnnotation
+    let pageIndex: Int
+
+    var id: ObjectIdentifier { ObjectIdentifier(annotation) }
+
+    var kind: String {
+        if annotation.contents == RedactionFlattener.marker { return "Redaction" }
+        if TextEditMarker.isTextEdit(annotation) { return "Replaced text" }
+        switch annotation.type ?? "" {
+        case "Highlight": return "Highlight"
+        case "Underline": return "Underline"
+        case "StrikeOut": return "Strike through"
+        case "Text": return "Note"
+        case "FreeText": return "Text"
+        case "Ink": return "Drawing"
+        case "Square": return "Rectangle"
+        case "Circle": return "Ellipse"
+        case "Stamp": return "Signature"
+        default: return annotation.type ?? "Annotation"
+        }
+    }
+
+    var summary: String {
+        let contents = (annotation.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !contents.isEmpty, contents != RedactionFlattener.marker else { return kind }
+        return contents.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    var symbol: String {
+        switch kind {
+        case "Redaction": return "eye.slash"
+        case "Replaced text": return "character.cursor.ibeam"
+        case "Highlight": return "highlighter"
+        case "Underline": return "underline"
+        case "Strike through": return "strikethrough"
+        case "Note": return "note.text"
+        case "Text": return "textformat"
+        case "Drawing": return "pencil.tip"
+        case "Rectangle": return "rectangle"
+        case "Ellipse": return "circle"
+        case "Signature": return "signature"
+        default: return "seal"
+        }
+    }
+}
+
+extension NSColor {
+    /// A highlighter version of a color: the chosen hue at the chosen strength, falling
+    /// back to yellow when the annotation color is black, which would blot out the text.
+    func highlightTint(alpha: Double) -> NSColor {
+        let base = usingColorSpace(.deviceRGB) ?? .systemYellow
+        let isNeutral = base.saturationComponent < 0.15 && base.brightnessComponent < 0.35
+        let tint = isNeutral ? NSColor.systemYellow : base
+        return tint.withAlphaComponent(max(0.05, min(alpha, 1)))
+    }
 }

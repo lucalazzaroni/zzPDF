@@ -21,7 +21,7 @@ struct SettingsView: View {
     private var generalSettings: some View {
         Form {
             Section("Startup") {
-                Toggle("Restore the previously open PDF", isOn: $preferences.restoreLastDocument)
+                Toggle("Reopen the documents that were open", isOn: $preferences.restoreLastDocument)
                 Toggle("Keep temporary recovery copies", isOn: $preferences.temporaryAutosave)
                     .onChange(of: preferences.temporaryAutosave) { _, _ in applyPreferences() }
                 Picker("Initial tool", selection: $preferences.initialTool) {
@@ -87,6 +87,15 @@ struct SettingsView: View {
                         ColorPicker("", selection: $preferences.shapeFillColor, supportsOpacity: true)
                             .labelsHidden()
                             .onChange(of: preferences.shapeFillColor) { _, _ in applyPreferences() }
+                    }
+                }
+            }
+            Section("Markup") {
+                LabeledContent("Highlight strength") {
+                    HStack {
+                        Slider(value: $preferences.highlightOpacity, in: 0.1...1)
+                            .frame(width: 190)
+                        Text("\(Int(preferences.highlightOpacity * 100))%").monospacedDigit().frame(width: 52)
                     }
                 }
             }

@@ -96,11 +96,20 @@ struct SessionCloseSmoke {
             "Closing an untitled window erased the document another window had stored"
         )
 
-        // A window still open at quit is stored again, even after another window forgot it.
+        // Two open documents are both remembered, frontmost first.
         let closed = makeWorkspace(preferences: preferences, recoveryDirectory: recoveryDirectory)
         closed.load(second)
+        check(
+            preferences.sessionDocuments.map(\.path) == [second.path, first.path],
+            "Two open documents are stored as \(preferences.sessionDocuments.map(\.path))"
+        )
+
+        // Closing one of them leaves the other one alone.
         closed.closeSessionDeliberately(saving: false)
-        check(preferences.lastDocumentURL == nil, "Closing the second document did not forget it")
+        check(
+            preferences.sessionDocuments.map(\.path) == [first.path],
+            "Closing one document left \(preferences.sessionDocuments.map(\.path))"
+        )
         remembered.rememberSessionForTermination()
         check(
             preferences.lastDocumentURL?.path == first.path,
@@ -108,9 +117,61 @@ struct SessionCloseSmoke {
         )
         closed.rememberSessionForTermination()
         check(
-            preferences.lastDocumentURL?.path == first.path,
+            preferences.sessionDocuments.map(\.path) == [first.path],
             "A window closed on purpose stored itself again while quitting"
         )
+
+        // The launch plan reopens one window per stored document.
+        let openAgain = makeWorkspace(preferences: preferences, recoveryDirectory: recoveryDirectory)
+        openAgain.load(second)
+        check(
+            preferences.sessionDocuments.count == 2,
+            "Reopening a document did not put it back in the session"
+        )
+        let registry = WorkspaceRegistry()
+        registry.prepareRestoreQueue(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: recoveryDirectory)
+        )
+        var restored: [String] = []
+        while let item = registry.nextRestoreItem() {
+            let window = makeWorkspace(preferences: preferences, recoveryDirectory: recoveryDirectory)
+            window.restore(item)
+            restored.append(window.fileURL?.path ?? "-")
+        }
+        check(
+            restored == [second.path, first.path],
+            "The launch plan reopened \(restored) instead of both documents, frontmost first"
+        )
+
+        // A stored document that has been deleted is dropped instead of reopening empty.
+        try? FileManager.default.removeItem(at: second)
+        let afterDeletion = WorkspaceRegistry()
+        afterDeletion.prepareRestoreQueue(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: recoveryDirectory)
+        )
+        var survivors: [String] = []
+        while let item = afterDeletion.nextRestoreItem() {
+            let window = makeWorkspace(preferences: preferences, recoveryDirectory: recoveryDirectory)
+            window.restore(item)
+            if let path = window.fileURL?.path { survivors.append(path) }
+        }
+        check(survivors == [first.path], "A deleted document was still reopened: \(survivors)")
+
+        // The recent list keeps what has been opened, newest first, without duplicates.
+        let recents = preferences.recentDocumentURLs.map(\.lastPathComponent)
+        check(
+            recents.first == "secondo.pdf" || recents.first == "primo.pdf",
+            "The recent list starts with \(recents)"
+        )
+        check(Set(recents).count == recents.count, "The recent list repeats itself: \(recents)")
+        check(
+            !recents.contains { $0 == "secondo.pdf" } || FileManager.default.fileExists(atPath: second.path),
+            "The recent list offers a file that is gone"
+        )
+        preferences.clearRecentDocuments()
+        check(preferences.recentDocumentURLs.isEmpty, "Clearing the recent list left entries behind")
 
         print("Session close and restore smoke test passed.")
     }

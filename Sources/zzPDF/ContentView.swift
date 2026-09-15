@@ -1,9 +1,34 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @State private var dropTargeted = false
+
+    /// Accepts PDFs and images dropped on the window: a PDF opens like any other
+    /// document, images are added as pages.
+    private func receiveDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        let identifier = UTType.fileURL.identifier
+        var handled = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(identifier) {
+            handled = true
+            provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      url.isFileURL else { return }
+                Task { @MainActor in
+                    if url.pathExtension.lowercased() == "pdf" {
+                        NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+                    } else {
+                        workspace.addImageFiles([url])
+                    }
+                }
+            }
+        }
+        return handled
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +58,18 @@ struct ContentView: View {
         }
         .onOpenURL { url in
             guard url.pathExtension.lowercased() == "pdf" else { return }
-            workspace.load(url)
+            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            receiveDroppedFiles(providers)
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [9, 6]))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
         }
         .onAppear {
             NSWindow.allowsAutomaticWindowTabbing = true
@@ -194,7 +230,10 @@ struct ToolPicker: View {
                     MarkupToolPicker()
                 } else if tool == .rectangle {
                     ShapeToolPicker()
-                } else if tool != .underline && tool != .strikeOut && tool != .oval {
+                } else if tool == .line {
+                    LineToolPicker()
+                } else if tool != .underline && tool != .strikeOut && tool != .oval
+                            && tool != .arrow && tool != .polygon {
                     Button {
                         if tool == .signature && !workspace.hasSignature {
                             workspace.showSignaturePad = true
@@ -248,6 +287,31 @@ struct MarkupToolPicker: View {
         } label: {
             Label(tool.label, systemImage: tool.symbol)
         }
+    }
+}
+
+struct LineToolPicker: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+
+    private var isSelected: Bool {
+        workspace.activeTool.isLineTool || workspace.activeTool == .polygon
+    }
+
+    var body: some View {
+        Menu {
+            Button { workspace.activateTool(.line) } label: { Label("Line", systemImage: "line.diagonal") }
+            Button { workspace.activateTool(.arrow) } label: { Label("Arrow", systemImage: "line.diagonal.arrow") }
+            Button { workspace.activateTool(.polygon) } label: { Label("Polygon", systemImage: "pentagon") }
+        } label: {
+            SubtoolMenuLabel(
+                symbol: isSelected ? workspace.activeTool.symbol : "line.diagonal.arrow",
+                selected: isSelected
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(isSelected ? workspace.activeTool.label : "Lines and Shapes")
     }
 }
 

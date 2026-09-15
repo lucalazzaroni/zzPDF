@@ -1,31 +1,78 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
+
+enum SidebarMode: String, CaseIterable, Identifiable {
+    case pages, outline, annotations
+
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .pages: "Pages"
+        case .outline: "Contents"
+        case .annotations: "Notes"
+        }
+    }
+    var symbol: String {
+        switch self {
+        case .pages: "doc.on.doc"
+        case .outline: "list.bullet.indent"
+        case .annotations: "bubble.left.and.text.bubble.right"
+        }
+    }
+}
 
 struct PageSidebar: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @State private var mode: SidebarMode
+
+    init(mode: SidebarMode = .pages) {
+        _mode = State(initialValue: mode)
+    }
 
     var body: some View {
         VStack(spacing: 0) {
-            HStack {
-                Text("PAGES")
-                    .font(.caption2.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Text("\(workspace.pageCount)")
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
+            Picker("", selection: $mode) {
+                ForEach(SidebarMode.allCases) { option in
+                    Image(systemName: option.symbol).help(option.label).tag(option)
+                }
             }
-            .padding(.horizontal, 12)
-            .frame(height: 36)
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .padding(.horizontal, 10)
+            .padding(.top, 8)
+            .padding(.bottom, 6)
 
+            switch mode {
+            case .pages: pageList
+            case .outline: outlineList
+            case .annotations: annotationList
+            }
+        }
+        .frame(minWidth: 155, idealWidth: 195, maxWidth: 260)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var pageList: some View {
+        VStack(spacing: 0) {
             ScrollViewReader { proxy in
                 ScrollView {
                     LazyVStack(spacing: 12) {
                         ForEach(0..<workspace.pageCount, id: \.self) { index in
-                            PageThumbnail(index: index, selected: index == workspace.currentPageIndex)
+                            PageThumbnail(index: index, selected: workspace.isPageSelected(index))
                                 .id(index)
                                 .onTapGesture { workspace.selectPage(index) }
+                                .contextMenu { pageMenu(for: index) }
+                                .draggable(PageDragItem(index: index)) {
+                                    PageThumbnail(index: index, selected: false)
+                                        .frame(width: 90)
+                                }
+                                .dropDestination(for: PageDragItem.self) { items, _ in
+                                    guard let item = items.first else { return false }
+                                    workspace.reorderPage(from: item.index, to: index)
+                                    return true
+                                }
                         }
                     }
                     .padding(.horizontal, 12)
@@ -44,18 +91,128 @@ struct PageSidebar: View {
                 Button { workspace.moveCurrentPage(by: 1) } label: { Image(systemName: "arrow.down") }
                     .help("Move Down")
                     .disabled(workspace.currentPageIndex >= workspace.pageCount - 1)
-                Button { workspace.duplicateCurrentPage() } label: { Image(systemName: "plus.square.on.square") }
+                Button { workspace.duplicateSelectedPages() } label: { Image(systemName: "plus.square.on.square") }
                     .help("Duplicate")
+                Button { workspace.extractSelectedPages() } label: { Image(systemName: "scissors") }
+                    .help("Extract Selected Pages…")
                 Spacer()
-                Button(role: .destructive) { workspace.deleteCurrentPage() } label: { Image(systemName: "trash") }
+                Button(role: .destructive) { workspace.deleteSelectedPages() } label: { Image(systemName: "trash") }
                     .help("Delete")
             }
             .buttonStyle(.plain)
             .padding(.horizontal, 13)
             .frame(height: 38)
+            if workspace.selectedPageIndexes.count > 1 {
+                Text("\(workspace.selectedPageIndexes.count) pages selected")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .padding(.bottom, 6)
+            }
         }
-        .frame(minWidth: 145, idealWidth: 175, maxWidth: 215)
-        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    @ViewBuilder
+    private func pageMenu(for index: Int) -> some View {
+        Button("Select") { workspace.selectPage(index) }
+        Button(workspace.isPageSelected(index) ? "Remove from Selection" : "Add to Selection") {
+            workspace.togglePageSelection(index)
+        }
+        Button("Select Through Here") { workspace.extendPageSelection(to: index) }
+        Divider()
+        Button("Rotate Left") { workspace.rotateSelectedPages(by: -90) }
+        Button("Rotate Right") { workspace.rotateSelectedPages(by: 90) }
+        Button("Duplicate") { workspace.duplicateSelectedPages() }
+        Button("Extract…") { workspace.extractSelectedPages() }
+        Divider()
+        Button("Delete", role: .destructive) { workspace.deleteSelectedPages() }
+    }
+
+    @ViewBuilder
+    private var outlineList: some View {
+        if let nodes = OutlineNode.tree(of: workspace.outlineRoot), !nodes.isEmpty {
+            List(nodes, children: \.children) { node in
+                Button {
+                    workspace.goToOutline(node.outline)
+                } label: {
+                    Text(node.label)
+                        .lineLimit(2)
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+            }
+            .listStyle(.sidebar)
+        } else {
+            sidebarPlaceholder("This PDF has no table of contents.")
+        }
+    }
+
+    @ViewBuilder
+    private var annotationList: some View {
+        let entries = workspace.annotationEntries()
+        if entries.isEmpty {
+            sidebarPlaceholder("Nothing annotated yet.")
+        } else {
+            List(entries) { entry in
+                Button {
+                    workspace.reveal(entry.annotation)
+                } label: {
+                    HStack(alignment: .firstTextBaseline, spacing: 7) {
+                        Image(systemName: entry.symbol)
+                            .foregroundStyle(.secondary)
+                            .frame(width: 15)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(entry.summary)
+                                .lineLimit(2)
+                            Text("\(entry.kind) · page \(entry.pageIndex + 1)")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .contextMenu {
+                    Button("Show") { workspace.reveal(entry.annotation) }
+                    Button("Delete", role: .destructive) { workspace.remove(entry.annotation) }
+                }
+            }
+            .listStyle(.sidebar)
+        }
+    }
+
+    private func sidebarPlaceholder(_ message: String) -> some View {
+        VStack {
+            Spacer()
+            Text(message)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .multilineTextAlignment(.center)
+                .padding(.horizontal, 18)
+            Spacer()
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+}
+
+struct OutlineNode: Identifiable {
+    let id = UUID()
+    let label: String
+    let outline: PDFOutline
+    let children: [OutlineNode]?
+
+    static func tree(of root: PDFOutline?) -> [OutlineNode]? {
+        guard let root else { return nil }
+        return (0..<root.numberOfChildren).compactMap { index in
+            guard let child = root.child(at: index) else { return nil }
+            let grandchildren = tree(of: child)
+            return OutlineNode(
+                label: child.label ?? "Untitled",
+                outline: child,
+                children: (grandchildren?.isEmpty ?? true) ? nil : grandchildren
+            )
+        }
     }
 }
 
@@ -94,6 +251,9 @@ struct PageThumbnail: View {
 
 struct InspectorPanel: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @EnvironmentObject private var preferences: AppPreferences
+
+    static let fontFamilies = NSFontManager.shared.availableFontFamilies
 
     var body: some View {
         ScrollView {
@@ -144,7 +304,7 @@ struct InspectorPanel: View {
             if workspace.activeTool == .editText, workspace.selectedAnnotationIsFreeText {
                 replacedTextControls
             }
-            if ![.select, .fillForms, .editText, .highlight, .redact].contains(workspace.activeTool) {
+            if ![.select, .fillForms, .editText, .redact].contains(workspace.activeTool) {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -152,7 +312,18 @@ struct InspectorPanel: View {
                         .labelsHidden()
                 }
             }
-            if [.draw, .signature].contains(workspace.activeTool) ||
+            if workspace.activeTool == .highlight {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Highlight Strength").font(.callout)
+                        Spacer()
+                        Text("\(Int(preferences.highlightOpacity * 100))%")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Slider(value: $preferences.highlightOpacity, in: 0.1...1)
+                }
+            }
+            if [.draw, .signature, .line, .arrow, .polygon].contains(workspace.activeTool) ||
                 ([.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -185,6 +356,10 @@ struct InspectorPanel: View {
                     }
                     Button("Use Image…") { workspace.importSignatureImage() }
                 }
+                if workspace.hasSignature {
+                    Button("Forget Signature") { workspace.forgetSignature() }
+                        .controlSize(.small)
+                }
             }
             Text(toolHint)
                 .font(.caption)
@@ -204,6 +379,9 @@ struct InspectorPanel: View {
         case .note: "Click the page, then type the note immediately."
         case .text: "Click the page to insert the text."
         case .draw: "Drag on the page to draw freehand."
+        case .line: "Drag to draw a straight line."
+        case .arrow: "Drag from the tail to the head of the arrow."
+        case .polygon: "Click each corner. Return closes the shape, double-click finishes it, Escape discards it."
         case .rectangle, .oval: "Drag to draw the shape. A live preview shows its size."
         case .redact: "Drag over sensitive content, then export a flattened copy to make the redaction permanent."
         case .signature: "Move over the page to preview the signature, then click to place it."
@@ -264,6 +442,41 @@ struct InspectorPanel: View {
                     }
                     .controlSize(.small)
                     selectedTextSizeControls
+                }
+                HStack {
+                    Picker("", selection: Binding(
+                        get: { workspace.selectedTextFontFamily },
+                        set: { workspace.setSelectedTextFontFamily($0) }
+                    )) {
+                        ForEach(InspectorPanel.fontFamilies, id: \.self) { family in
+                            Text(family).tag(family)
+                        }
+                    }
+                    .labelsHidden()
+                    Button {
+                        workspace.toggleSelectedTextTrait(bold: true)
+                    } label: {
+                        Image(systemName: "bold")
+                            .frame(width: 22, height: 20)
+                            .background(
+                                workspace.selectedTextIsBold ? Color.accentColor.opacity(0.25) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Bold")
+                    Button {
+                        workspace.toggleSelectedTextTrait(bold: false)
+                    } label: {
+                        Image(systemName: "italic")
+                            .frame(width: 22, height: 20)
+                            .background(
+                                workspace.selectedTextIsItalic ? Color.accentColor.opacity(0.25) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Italic")
                 }
                 HStack {
                     Text("Text Color").font(.callout)
@@ -399,10 +612,10 @@ struct InspectorPanel: View {
             }
             .onChange(of: workspace.pageLayout) { _, layout in workspace.setPageLayout(layout) }
             HStack(spacing: 8) {
-                InspectorIconButton(icon: "rotate.left", help: "Rotate Left") { workspace.rotateCurrentPage(by: -90) }
-                InspectorIconButton(icon: "rotate.right", help: "Rotate Right") { workspace.rotateCurrentPage(by: 90) }
-                InspectorIconButton(icon: "plus.square.on.square", help: "Duplicate") { workspace.duplicateCurrentPage() }
-                InspectorIconButton(icon: "scissors", help: "Extract") { workspace.extractCurrentPage() }
+                InspectorIconButton(icon: "rotate.left", help: "Rotate Left") { workspace.rotateSelectedPages(by: -90) }
+                InspectorIconButton(icon: "rotate.right", help: "Rotate Right") { workspace.rotateSelectedPages(by: 90) }
+                InspectorIconButton(icon: "plus.square.on.square", help: "Duplicate") { workspace.duplicateSelectedPages() }
+                InspectorIconButton(icon: "scissors", help: "Extract") { workspace.extractSelectedPages() }
             }
             HStack {
                 Button("Trim Margins") { workspace.changePageBox(.cropBox, inset: 8) }
@@ -418,9 +631,20 @@ struct InspectorPanel: View {
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Button { workspace.mergePDF() } label: { Label("Merge PDF…", systemImage: "square.stack.3d.up") }
             Button { workspace.importImages() } label: { Label("Add Images…", systemImage: "photo.on.rectangle.angled") }
-            Button { workspace.recognizeCurrentPage() } label: { Label("Recognize Text (OCR)", systemImage: "text.viewfinder") }
+            Button { workspace.recognizeCurrentPage() } label: { Label("Read Text on This Page…", systemImage: "text.viewfinder") }
+            Button { workspace.makeDocumentSearchable() } label: {
+                Label("Make Scanned Pages Searchable", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(workspace.isRecognizingText)
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
+            Button { workspace.exportPagesAsImages() } label: { Label("Export Pages as Images…", systemImage: "photo") }
+            Button { workspace.exportSmallerCopy() } label: { Label("Export Smaller Copy…", systemImage: "arrow.down.circle") }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
+            if workspace.isPasswordProtected {
+                Button { workspace.removePasswordProtection() } label: {
+                    Label("Export Without Password…", systemImage: "lock.open")
+                }
+            }
         }
         .buttonStyle(.plain)
     }
@@ -646,4 +870,17 @@ struct FreeTextEditorSheet: View {
         .interactiveDismissDisabled()
         .onAppear { editorFocused = true }
     }
+}
+
+/// Carries a page index while a thumbnail is dragged to a new position.
+struct PageDragItem: Codable, Transferable {
+    let index: Int
+
+    static var transferRepresentation: some TransferRepresentation {
+        CodableRepresentation(contentType: .zzPDFPageReference)
+    }
+}
+
+extension UTType {
+    static let zzPDFPageReference = UTType(exportedAs: "it.lucalazzaroni.zzpdf.page-reference")
 }

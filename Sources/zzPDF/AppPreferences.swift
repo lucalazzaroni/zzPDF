@@ -15,13 +15,14 @@ final class AppPreferences: ObservableObject {
         static let shapeHasFill = "shapeHasFill"
         static let shapeFillColor = "shapeFillColor"
         static let autoFitFormText = "autoFitFormText"
+        static let highlightOpacity = "highlightOpacity"
         static let confirmPageDeletion = "confirmPageDeletion"
         static let confirmFlattenedExport = "confirmFlattenedExport"
         static let exportFolderPath = "exportFolderPath"
-        static let lastDocumentPath = "lastDocumentPath"
-        static let lastPageIndex = "lastPageIndex"
-        static let lastZoom = "lastZoom"
-        static let lastPageLayout = "lastPageLayout"
+        static let signatureStrokes = "signatureStrokes"
+        static let signatureImage = "signatureImage"
+        static let sessionDocuments = "sessionDocuments"
+        static let recentDocuments = "recentDocuments"
     }
 
     private let defaults: UserDefaults
@@ -38,9 +39,12 @@ final class AppPreferences: ObservableObject {
     @Published var shapeHasFill: Bool { didSet { defaults.set(shapeHasFill, forKey: Key.shapeHasFill) } }
     @Published var shapeFillColor: Color { didSet { saveColor(shapeFillColor, key: Key.shapeFillColor) } }
     @Published var autoFitFormText: Bool { didSet { defaults.set(autoFitFormText, forKey: Key.autoFitFormText) } }
+    @Published var highlightOpacity: Double { didSet { defaults.set(highlightOpacity, forKey: Key.highlightOpacity) } }
     @Published var confirmPageDeletion: Bool { didSet { defaults.set(confirmPageDeletion, forKey: Key.confirmPageDeletion) } }
     @Published var confirmFlattenedExport: Bool { didSet { defaults.set(confirmFlattenedExport, forKey: Key.confirmFlattenedExport) } }
     @Published var exportFolderPath: String { didSet { defaults.set(exportFolderPath, forKey: Key.exportFolderPath) } }
+    /// Bumped whenever the recent-documents list changes, so the menu rebuilds.
+    @Published var recentDocumentsToken = UUID()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -55,6 +59,7 @@ final class AppPreferences: ObservableObject {
             Key.textFontSize: 15.0,
             Key.shapeHasFill: false,
             Key.autoFitFormText: true,
+            Key.highlightOpacity: 0.45,
             Key.confirmPageDeletion: true,
             Key.confirmFlattenedExport: true,
             Key.exportFolderPath: ""
@@ -72,39 +77,130 @@ final class AppPreferences: ObservableObject {
         shapeHasFill = defaults.bool(forKey: Key.shapeHasFill)
         shapeFillColor = Self.loadColor(defaults: defaults, key: Key.shapeFillColor) ?? .black
         autoFitFormText = defaults.bool(forKey: Key.autoFitFormText)
+        highlightOpacity = max(0.05, min(defaults.double(forKey: Key.highlightOpacity), 1))
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
     }
 
-    var lastDocumentURL: URL? {
-        let path = defaults.string(forKey: Key.lastDocumentPath) ?? ""
-        return path.isEmpty ? nil : URL(fileURLWithPath: path)
-    }
-    var lastPageIndex: Int { defaults.integer(forKey: Key.lastPageIndex) }
-    var lastZoom: Double { defaults.double(forKey: Key.lastZoom) }
-    var lastPageLayout: PageLayoutMode {
-        PageLayoutMode(rawValue: defaults.string(forKey: Key.lastPageLayout) ?? "") ?? defaultPageLayout
+    /// A drawn signature, stored as one array of interleaved x/y coordinates per stroke,
+    /// so it survives quitting instead of having to be redrawn every session.
+    var signatureStrokes: [[CGPoint]] {
+        get {
+            guard let stored = defaults.array(forKey: Key.signatureStrokes) as? [[Double]] else { return [] }
+            return stored.map { stroke in
+                stride(from: 0, to: stroke.count - 1, by: 2).map { CGPoint(x: stroke[$0], y: stroke[$0 + 1]) }
+            }
+            .filter { $0.count > 1 }
+        }
+        set {
+            guard !newValue.isEmpty else {
+                defaults.removeObject(forKey: Key.signatureStrokes)
+                return
+            }
+            let encoded = newValue.map { stroke in stroke.flatMap { [Double($0.x), Double($0.y)] } }
+            defaults.set(encoded, forKey: Key.signatureStrokes)
+        }
     }
 
+    var signatureImageData: Data? {
+        get { defaults.data(forKey: Key.signatureImage) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.signatureImage)
+            } else {
+                defaults.removeObject(forKey: Key.signatureImage)
+            }
+        }
+    }
+
+    /// The recent list is kept here rather than in NSDocumentController, which records
+    /// nothing in an app that is not built on NSDocument.
+    private static let maximumRecentDocuments = 10
+
+    func noteRecentDocument(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var paths = (defaults.array(forKey: Key.recentDocuments) as? [String] ?? []).filter { $0 != path }
+        paths.insert(path, at: 0)
+        defaults.set(Array(paths.prefix(Self.maximumRecentDocuments)), forKey: Key.recentDocuments)
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        recentDocumentsToken = UUID()
+    }
+
+    func clearRecentDocuments() {
+        defaults.removeObject(forKey: Key.recentDocuments)
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        recentDocumentsToken = UUID()
+    }
+
+    /// Recently opened files that are still on disk, newest first.
+    var recentDocumentURLs: [URL] {
+        let paths = defaults.array(forKey: Key.recentDocuments) as? [String] ?? []
+        return paths
+            .filter { FileManager.default.fileExists(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
+    }
+
+    /// One entry per document that was open when the app last quit, frontmost first.
+    struct SessionDocument: Codable, Equatable {
+        var path: String
+        var pageIndex: Int
+        var zoom: Double
+        var layout: String
+
+        var url: URL { URL(fileURLWithPath: path) }
+        var pageLayout: PageLayoutMode { PageLayoutMode(rawValue: layout) ?? .continuous }
+    }
+
+    private static let maximumSessionDocuments = 8
+
+    var sessionDocuments: [SessionDocument] {
+        get {
+            guard let data = defaults.data(forKey: Key.sessionDocuments),
+                  let stored = try? JSONDecoder().decode([SessionDocument].self, from: data) else { return [] }
+            return stored
+        }
+        set {
+            guard !newValue.isEmpty else {
+                defaults.removeObject(forKey: Key.sessionDocuments)
+                return
+            }
+            let trimmed = Array(newValue.prefix(Self.maximumSessionDocuments))
+            guard let data = try? JSONEncoder().encode(trimmed) else { return }
+            defaults.set(data, forKey: Key.sessionDocuments)
+        }
+    }
+
+    var lastDocumentURL: URL? { sessionDocuments.first?.url }
+    var lastPageIndex: Int { sessionDocuments.first?.pageIndex ?? 0 }
+    var lastZoom: Double { sessionDocuments.first?.zoom ?? 0 }
+    var lastPageLayout: PageLayoutMode { sessionDocuments.first?.pageLayout ?? defaultPageLayout }
+
+    /// Moves the document to the front of the list, so the window in front when the app
+    /// quits is the one restored first.
     func rememberDocument(_ url: URL, pageIndex: Int, zoom: Double, layout: PageLayoutMode) {
-        defaults.set(url.path, forKey: Key.lastDocumentPath)
-        defaults.set(max(0, pageIndex), forKey: Key.lastPageIndex)
-        defaults.set(max(0, zoom), forKey: Key.lastZoom)
-        defaults.set(layout.rawValue, forKey: Key.lastPageLayout)
+        let entry = SessionDocument(
+            path: url.standardizedFileURL.path,
+            pageIndex: max(0, pageIndex),
+            zoom: max(0, zoom),
+            layout: layout.rawValue
+        )
+        var documents = sessionDocuments.filter { $0.path != entry.path }
+        documents.insert(entry, at: 0)
+        sessionDocuments = documents
     }
 
-    func rememberView(pageIndex: Int, zoom: Double, layout: PageLayoutMode) {
-        defaults.set(max(0, pageIndex), forKey: Key.lastPageIndex)
-        if zoom > 0 { defaults.set(zoom, forKey: Key.lastZoom) }
-        defaults.set(layout.rawValue, forKey: Key.lastPageLayout)
+    func forgetDocument(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        sessionDocuments = sessionDocuments.filter { $0.path != path }
     }
 
     func forgetLastDocument() {
-        defaults.removeObject(forKey: Key.lastDocumentPath)
-        defaults.removeObject(forKey: Key.lastPageIndex)
-        defaults.removeObject(forKey: Key.lastZoom)
-        defaults.removeObject(forKey: Key.lastPageLayout)
+        sessionDocuments = Array(sessionDocuments.dropFirst())
+    }
+
+    func forgetAllDocuments() {
+        sessionDocuments = []
     }
 
     func reset() {
@@ -120,9 +216,14 @@ final class AppPreferences: ObservableObject {
         shapeHasFill = false
         shapeFillColor = .black
         autoFitFormText = true
+        highlightOpacity = 0.45
         confirmPageDeletion = true
         confirmFlattenedExport = true
         exportFolderPath = ""
+        signatureStrokes = []
+        signatureImageData = nil
+        clearRecentDocuments()
+        forgetAllDocuments()
     }
 
     private func saveColor(_ color: Color, key: String) {

@@ -1,6 +1,13 @@
 import AppKit
 import SwiftUI
 
+/// Posted with a file URL when a document should be opened, from the Finder, a drop,
+/// or the recent-documents menu.
+extension Notification.Name {
+    static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
+}
+
+
 @MainActor
 final class WorkspaceRegistry: ObservableObject {
     private let workspaces = NSHashTable<PDFWorkspace>.weakObjects()
@@ -9,7 +16,16 @@ final class WorkspaceRegistry: ObservableObject {
     private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
     private var didAssignInitialRestoration = false
     private weak var pendingTabHost: NSWindow?
+    private var pendingDocumentURLs: [URL] = []
+    private var restoreQueue: [RestoreItem] = []
+    private var didOpenRestoreWindows = false
     private(set) var isTerminating = false
+
+    /// What a window opened at launch should put on screen.
+    enum RestoreItem {
+        case recovery
+        case session(AppPreferences.SessionDocument)
+    }
 
     func register(_ workspace: PDFWorkspace) {
         workspaces.add(workspace)
@@ -52,10 +68,48 @@ final class WorkspaceRegistry: ObservableObject {
         }
     }
 
+    /// Queues a file for the next window to open, so a document arriving from the Finder
+    /// or a drop lands in its own window instead of replacing what is already on screen.
+    func enqueueDocument(_ url: URL) {
+        pendingDocumentURLs.append(url)
+    }
+
+    func dequeueDocument() -> URL? {
+        pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
+    }
+
+    var hasPendingDocuments: Bool { !pendingDocumentURLs.isEmpty }
+
     func shouldRestoreInitialWindow() -> Bool {
         guard !didAssignInitialRestoration else { return false }
         didAssignInitialRestoration = true
         return true
+    }
+
+    /// Works out everything the app should reopen: unsaved work waiting in the recovery
+    /// store first, then the documents that were on screen when it last quit. Runs once.
+    func prepareRestoreQueue(preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore? = nil) {
+        guard shouldRestoreInitialWindow() else { return }
+        let store = recoveryStore ?? .shared
+        let recoveries = preferences.temporaryAutosave ? store.pendingRecords() : []
+        restoreQueue = Array(repeating: .recovery, count: recoveries.count)
+        guard preferences.restoreLastDocument else { return }
+        let recovered = Set(recoveries.compactMap(\.originalPath))
+        for document in preferences.sessionDocuments
+        where !recovered.contains(document.path) && FileManager.default.fileExists(atPath: document.path) {
+            restoreQueue.append(.session(document))
+        }
+    }
+
+    func nextRestoreItem() -> RestoreItem? {
+        restoreQueue.isEmpty ? nil : restoreQueue.removeFirst()
+    }
+
+    /// Opens one window for every document still waiting, once the first one is showing.
+    func openWindowsForRemainingRestores(_ openWindow: (String) -> Void) {
+        guard !didOpenRestoreWindows else { return }
+        didOpenRestoreWindows = true
+        for _ in restoreQueue { openWindow("document") }
     }
 
     func applyPreferencesToOpenDocuments() {
