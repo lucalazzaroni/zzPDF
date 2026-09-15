@@ -60,7 +60,7 @@ cd zzPDF
 ./build-app.sh
 ```
 
-The script picks the newest installed macOS SDK that can actually compile SwiftUI, because some Command Line Tools releases ship an SDK whose SwiftUI needs a macro plugin the toolchain does not install. Set `ZZPDF_SDK_PATH` to override the choice. If Swift Package Manager itself is broken by a half-applied Command Line Tools update, the script compiles the sources directly instead.
+The script does not trust whatever `xcode-select` points at. It compiles a one-line SwiftUI probe with every Swift compiler and macOS SDK it can find and keeps the first pair that works, because two things go wrong quietly on real machines: some Command Line Tools releases ship an SDK whose SwiftUI needs a macro plugin the toolchain does not install, and an Xcode newer than the running macOS can break `xcrun`, `swift`, and `swiftc` once it is selected. Set `ZZPDF_SWIFTC` and `ZZPDF_SDK_PATH` to override the choice. If Swift Package Manager itself is unusable, the script compiles the sources directly instead.
 
 The script creates:
 
@@ -101,7 +101,7 @@ AppResources/        Info.plist and app icon
 build-app.sh         release build and app packaging
 scripts/notarize.sh  notarization of a Developer ID build
 scripts/run-tests.sh builds and runs every standalone smoke test
-scripts/select-sdk.sh picks a macOS SDK that can compile SwiftUI
+scripts/select-sdk.sh picks a compiler and SDK that can compile SwiftUI
 Tests/InkResizeSmoke/ standalone Ink path-resize regression check
 Tests/FormOverlaySmoke/ standalone interactive form-overlay regression check
 Tests/RecoverySmoke/    standalone temporary autosave and recovery regression check

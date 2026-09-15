@@ -9,32 +9,35 @@ APP_DIR="$OUTPUT_DIR/zzPDF.app"
 ZIP_PATH="$OUTPUT_DIR/zzPDF-macOS.zip"
 SIGN_IDENTITY="${SIGN_IDENTITY:--}"
 
-SDK_PATH="$("${0:A:h}/scripts/select-sdk.sh")"
-[[ -n "$SDK_PATH" ]] || exit 1
-if [[ -z "${ZZPDF_SDK_PATH:-}" && "$SDK_PATH" != "$(xcrun --sdk macosx --show-sdk-path 2>/dev/null)" ]]; then
-    echo "The default SDK cannot compile SwiftUI; building against $SDK_PATH instead."
-fi
+TOOLCHAIN=("${(@f)$("${0:A:h}/scripts/select-sdk.sh")}")
+SWIFTC="${TOOLCHAIN[1]}"
+SDK_PATH="${TOOLCHAIN[2]}"
+[[ -n "$SWIFTC" && -n "$SDK_PATH" ]] || exit 1
+SWIFT_DRIVER="${SWIFTC:h}/swift"
+echo "Toolchain: $SWIFTC"
+echo "SDK: $SDK_PATH"
 
-SDK_VERSION="$(SDKROOT="$SDK_PATH" xcrun --sdk "$SDK_PATH" --show-sdk-version 2>/dev/null || true)"
+SDK_VERSION="$(/usr/libexec/PlistBuddy -c "Print :Version" "$SDK_PATH/SDKSettings.plist" 2>/dev/null || true)"
 SDK_MAJOR="${SDK_VERSION%%.*}"
 
 mkdir -p "$BUILD_DIR" "$CACHE_DIR" "$OUTPUT_DIR"
 
 EXECUTABLE_PATH=""
-if CLANG_MODULE_CACHE_PATH="$CACHE_DIR" SDKROOT="$SDK_PATH" \
-    swift build -c release --disable-sandbox --scratch-path "$BUILD_DIR"; then
+if [[ -x "$SWIFT_DRIVER" ]] && CLANG_MODULE_CACHE_PATH="$CACHE_DIR" SDKROOT="$SDK_PATH" \
+    "$SWIFT_DRIVER" build -c release --disable-sandbox --scratch-path "$BUILD_DIR"; then
     EXECUTABLE_PATH="$(find "$BUILD_DIR" -type f -path '*/release/zzPDF' -perm +111 | head -n 1)"
 fi
 
-# Swift Package Manager itself can be broken by a half-applied Command Line Tools update,
-# while the compiler still works. The target is one module with no dependencies, so
-# compiling the sources directly produces the same binary.
+# Swift Package Manager can be unusable while the compiler still works, whether from a
+# half-applied Command Line Tools update or an Xcode newer than the running macOS. The
+# target is one module with no dependencies, so compiling the sources directly is
+# equivalent.
 if [[ -z "$EXECUTABLE_PATH" ]]; then
     echo "swift build is unavailable; compiling the sources directly."
     DIRECT_EXECUTABLE="$BUILD_DIR/zzPDF-direct"
     mkdir -p "$BUILD_DIR"
     CLANG_MODULE_CACHE_PATH="$CACHE_DIR" SDKROOT="$SDK_PATH" \
-        xcrun swiftc -O -parse-as-library -target arm64-apple-macos14.0 \
+        "$SWIFTC" -O -parse-as-library -target arm64-apple-macos14.0 -sdk "$SDK_PATH" \
         "$PROJECT_DIR"/Sources/zzPDF/*.swift -o "$DIRECT_EXECUTABLE"
     EXECUTABLE_PATH="$DIRECT_EXECUTABLE"
 fi
@@ -55,7 +58,7 @@ cp "$PROJECT_DIR/AppResources/AppIcon.icns" "$APP_DIR/Contents/Resources/AppIcon
 # keeping the macOS 14 deployment target and API compatibility.
 if [[ -n "$SDK_MAJOR" && "$SDK_MAJOR" -lt 26 ]]; then
     MODERN_EXECUTABLE="$BUILD_DIR/zzPDF-modern"
-    xcrun vtool \
+    "${SWIFTC:h}/../../usr/bin/vtool" \
         -set-build-version macos 14.0 26.0 \
         -replace \
         -output "$MODERN_EXECUTABLE" \

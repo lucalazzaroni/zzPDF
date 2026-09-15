@@ -11,8 +11,10 @@ PROJECT_DIR="${0:A:h:h}"
 BUILD_DIR="$PROJECT_DIR/work/tests"
 mkdir -p "$BUILD_DIR"
 
-SDK_PATH="$("$PROJECT_DIR/scripts/select-sdk.sh")"
-[[ -n "$SDK_PATH" ]] || exit 1
+TOOLCHAIN=("${(@f)$("$PROJECT_DIR/scripts/select-sdk.sh")}")
+SWIFTC="${TOOLCHAIN[1]}"
+SDK_PATH="${TOOLCHAIN[2]}"
+[[ -n "$SWIFTC" && -n "$SDK_PATH" ]] || exit 1
 
 SOURCES=("$PROJECT_DIR"/Sources/zzPDF/*.swift)
 SOURCES=("${(@)SOURCES:#*/ZZPDFApp.swift}")
@@ -39,8 +41,8 @@ for suite in "${SUITES[@]}"; do
     binary="$BUILD_DIR/$suite"
     # A test that declares @main needs -parse-as-library; one written as top-level code
     # must not have it, so try the common case first and fall back.
-    if ! SDKROOT="$SDK_PATH" xcrun swiftc -O -parse-as-library "${SOURCES[@]}" "$main" -o "$binary" 2>/dev/null; then
-        if ! SDKROOT="$SDK_PATH" xcrun swiftc -O "${SOURCES[@]}" "$main" -o "$binary"; then
+    if ! SDKROOT="$SDK_PATH" "$SWIFTC" -O -sdk "$SDK_PATH" -parse-as-library "${SOURCES[@]}" "$main" -o "$binary" 2>/dev/null; then
+        if ! SDKROOT="$SDK_PATH" "$SWIFTC" -O -sdk "$SDK_PATH" "${SOURCES[@]}" "$main" -o "$binary"; then
             echo "  $suite: did not compile"
             FAILED+=("$suite")
             continue
