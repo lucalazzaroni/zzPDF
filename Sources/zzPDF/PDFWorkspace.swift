@@ -152,6 +152,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var freeTextDraftText = ""
     @Published var freeTextDraftFontSize: Double = 15
     @Published var statusMessage = "Open a PDF to get started"
+    @Published private(set) var isRecognizingText = false
     @Published var isDirty = false {
         didSet {
             if isDirty {
@@ -1688,6 +1689,62 @@ final class PDFWorkspace: ObservableObject {
             zoom: zoom ?? Double(pdfView?.scaleFactor ?? 0),
             layout: pageLayout
         )
+    }
+
+    /// Runs OCR over every page that has no text and rebuilds those pages with an
+    /// invisible text layer, so the document becomes searchable everywhere it was a scan.
+    func makeDocumentSearchable() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument, !isRecognizingText else { return }
+        let targets = OCRTextLayer.scannedPageIndexes(in: document)
+        guard !targets.isEmpty else {
+            statusMessage = "Every page already has searchable text"
+            return
+        }
+        isRecognizingText = true
+        statusMessage = "Recognizing text on \(targets.count) page\(targets.count == 1 ? "" : "s")…"
+
+        Task { @MainActor in
+            var replacements: [(index: Int, original: PDFPage, recognized: PDFPage)] = []
+            for (position, index) in targets.enumerated() {
+                guard let page = document.page(at: index),
+                      let rendered = OCRTextLayer.render(page) else { continue }
+                statusMessage = "Recognizing text on page \(index + 1) (\(position + 1) of \(targets.count))…"
+                let image = rendered.image
+                let lines = await Task.detached(priority: .userInitiated) {
+                    OCRTextLayer.recognizedLines(in: image)
+                }.value
+                guard !lines.isEmpty,
+                      let recognized = OCRTextLayer.searchablePage(
+                        image: image,
+                        pointSize: rendered.pointSize,
+                        lines: lines
+                      ) else { continue }
+                replacements.append((index, page, recognized))
+            }
+
+            isRecognizingText = false
+            guard !replacements.isEmpty else {
+                statusMessage = "No text was recognized"
+                return
+            }
+            let wasDirty = isDirty
+            let apply: ([(index: Int, original: PDFPage, recognized: PDFPage)], Bool) -> Void = { items, searchable in
+                for item in items {
+                    guard item.index < document.pageCount else { continue }
+                    document.removePage(at: item.index)
+                    document.insert(searchable ? item.recognized : item.original, at: item.index)
+                }
+            }
+            apply(replacements, true)
+            let recorded = replacements
+            registerEdit(
+                wasDirtyBefore: wasDirty,
+                undo: { apply(recorded, false) },
+                redo: { apply(recorded, true) }
+            )
+            changed("\(replacements.count) page\(replacements.count == 1 ? "" : "s") made searchable")
+        }
     }
 
     func recognizeCurrentPage() {

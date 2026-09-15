@@ -422,7 +422,11 @@ struct InspectorPanel: View {
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
             Button { workspace.mergePDF() } label: { Label("Merge PDF…", systemImage: "square.stack.3d.up") }
             Button { workspace.importImages() } label: { Label("Add Images…", systemImage: "photo.on.rectangle.angled") }
-            Button { workspace.recognizeCurrentPage() } label: { Label("Recognize Text (OCR)", systemImage: "text.viewfinder") }
+            Button { workspace.recognizeCurrentPage() } label: { Label("Read Text on This Page…", systemImage: "text.viewfinder") }
+            Button { workspace.makeDocumentSearchable() } label: {
+                Label("Make Scanned Pages Searchable", systemImage: "doc.text.magnifyingglass")
+            }
+            .disabled(workspace.isRecognizingText)
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
