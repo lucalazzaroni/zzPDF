@@ -38,7 +38,7 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.
 - OCR for the current page using Apple Vision.
 - Standard save, flattened export, and password protection.
 
-A redaction becomes irreversible only in a copy produced with **Export Flattened**.
+A redaction becomes irreversible only in a copy produced with **Export Flattened**, which rewrites every redacted page as an image so the hidden words are gone from the file rather than merely covered. See [Redaction](#redaction).
 
 ## Requirements
 
@@ -55,6 +55,8 @@ git clone https://github.com/lucalazzaroni/zzPDF.git
 cd zzPDF
 ./build-app.sh
 ```
+
+The script picks the newest installed macOS SDK that can actually compile SwiftUI, because some Command Line Tools releases ship an SDK whose SwiftUI needs a macro plugin the toolchain does not install. Set `ZZPDF_SDK_PATH` to override the choice.
 
 The script creates:
 
@@ -87,7 +89,17 @@ Tests/FormOverlaySmoke/ standalone interactive form-overlay regression check
 Tests/RecoverySmoke/    standalone temporary autosave and recovery regression check
 Tests/PrintSmoke/       standalone native print-operation regression check
 Tests/TextEditSmoke/    standalone page-text editing regression check
+Tests/RedactionSmoke/   standalone redaction-flattening regression check
+Tests/SessionCloseSmoke/ standalone window-close and session-restore regression check
 ```
+
+## Redaction
+
+Drawing a redaction places an opaque rectangle over the content. In the working document that rectangle is an annotation, so it can be moved, resized, and undone, and the text underneath is still there.
+
+**Export Flattened** is what makes it permanent. Every page that carries a redaction is re-rendered at 200 dpi and replaced by that image, then written out. Covering the words with a black box alone is not enough: burned-in annotations leave the original text objects in the page, where any PDF reader can still select, copy, and search them.
+
+The consequence is deliberate: text on a redacted page stops being selectable and searchable, because that text is the thing being removed. Pages without redactions are untouched and keep their text. The export confirmation says how many pages will be rasterized.
 
 ## Editing Page Text
 

@@ -6,6 +6,7 @@ final class WorkspaceRegistry: ObservableObject {
     private let workspaces = NSHashTable<PDFWorkspace>.weakObjects()
     private let configuredWindows = NSHashTable<NSWindow>.weakObjects()
     private let delegateProxies = NSMapTable<NSWindow, DocumentWindowDelegateProxy>.weakToStrongObjects()
+    private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
     private var didAssignInitialRestoration = false
     private weak var pendingTabHost: NSWindow?
     private(set) var isTerminating = false
@@ -21,6 +22,7 @@ final class WorkspaceRegistry: ObservableObject {
     func configure(window: NSWindow, workspace: PDFWorkspace) {
         let isNewWindow = !configuredWindows.contains(window)
         configuredWindows.add(window)
+        workspacesByWindow.setObject(workspace, forKey: window)
         register(workspace)
 
         window.tabbingMode = .preferred
@@ -70,7 +72,17 @@ final class WorkspaceRegistry: ObservableObject {
 
     func prepareForTermination() {
         isTerminating = true
+        rememberFrontmostSession()
         flushTemporaryRecoveries()
+    }
+
+    /// Writes the session to restore next launch back to front, so the frontmost window
+    /// wins. Without this a window closed earlier could have cleared the stored session
+    /// while another document was still open.
+    private func rememberFrontmostSession() {
+        for window in NSApp.orderedWindows.reversed() {
+            workspacesByWindow.object(forKey: window)?.rememberSessionForTermination()
+        }
     }
 
     func shouldClose(window: NSWindow, workspace: PDFWorkspace) -> Bool {

@@ -184,6 +184,7 @@ final class PDFWorkspace: ObservableObject {
     private var textSizeWasDirty = false
     private var activeSearchQuery = ""
     private var didAttemptSessionRestore = false
+    private var sessionDiscarded = false
     private var pendingRestoredPageIndex: Int?
     private var pendingRestoredZoom: Double?
     private var restoringViewState = false
@@ -199,7 +200,7 @@ final class PDFWorkspace: ObservableObject {
     var hasSignature: Bool { !savedSignature.isEmpty || signatureImage != nil }
     var selectedAnnotationIsShape: Bool {
         guard let annotation = selectedAnnotation else { return false }
-        if annotation.contents == "Redaction — export a flattened copy" { return false }
+        if annotation.contents == RedactionFlattener.marker { return false }
         return annotation.isSubtype(.square) || annotation.isSubtype(.circle)
     }
     var selectedAnnotationIsFreeText: Bool {
@@ -262,6 +263,7 @@ final class PDFWorkspace: ObservableObject {
         pendingNewNote = nil
         pendingNewFreeText = nil
         activeTextEdit = nil
+        sessionDiscarded = false
         rebuildTextReplacementLinks()
         undoActions.removeAll()
         redoActions.removeAll()
@@ -350,23 +352,39 @@ final class PDFWorkspace: ObservableObject {
 
     func exportFlattened() {
         finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        let redactedPages = RedactionFlattener.redactedPageIndexes(in: document)
         if preferences.confirmFlattenedExport,
            !confirmAction(
                title: "Export Flattened Copy?",
-               message: "Annotations and redactions will be permanently applied to the exported copy."
+               message: RedactionFlattener.exportWarning(redactedPageCount: redactedPages.count)
            ) { return }
-        guard let document = pdfDocument,
-              let url = chooseSaveURL(defaultName: "\(displayName)-flattened.pdf") else { return }
-        let options: [PDFDocumentWriteOption: Any] = [
-            .burnInAnnotationsOption: true,
-            .saveImagesAsJPEGOption: true,
-            .optimizeImagesForScreenOption: true
-        ]
-        if document.write(to: url, withOptions: options) {
-            statusMessage = "Flattened copy exported"
+        guard let url = chooseSaveURL(defaultName: "\(displayName)-flattened.pdf") else { return }
+        if writeFlattenedCopy(of: document, to: url, extraOptions: [:]) {
+            statusMessage = redactedPages.isEmpty
+                ? "Flattened copy exported"
+                : "Flattened copy exported, \(redactedPages.count) redacted page\(redactedPages.count == 1 ? "" : "s") rasterized"
         } else {
             presentError("The export failed.")
         }
+    }
+
+    /// Writes a copy in which annotations are part of the page. Redacted pages are
+    /// rasterized first: burning in a black rectangle only hides the text visually, and
+    /// the words underneath stay selectable and searchable in the exported file.
+    private func writeFlattenedCopy(
+        of document: PDFDocument,
+        to url: URL,
+        extraOptions: [PDFDocumentWriteOption: Any]
+    ) -> Bool {
+        var options: [PDFDocumentWriteOption: Any] = extraOptions
+        options[.burnInAnnotationsOption] = true
+        guard let flattened = RedactionFlattener.rasterizingRedactedPages(of: document) else {
+            options[.saveImagesAsJPEGOption] = true
+            options[.optimizeImagesForScreenOption] = true
+            return document.write(to: url, withOptions: options)
+        }
+        return flattened.write(to: url, withOptions: options)
     }
 
     func exportProtected(ownerPassword: String, userPassword: String, flatten: Bool) {
@@ -376,8 +394,10 @@ final class PDFWorkspace: ObservableObject {
               let url = chooseSaveURL(defaultName: "\(displayName)-protected.pdf") else { return }
         var options: [PDFDocumentWriteOption: Any] = [.ownerPasswordOption: ownerPassword]
         if !userPassword.isEmpty { options[.userPasswordOption] = userPassword }
-        if flatten { options[.burnInAnnotationsOption] = true }
-        if document.write(to: url, withOptions: options) {
+        let succeeded = flatten
+            ? writeFlattenedCopy(of: document, to: url, extraOptions: options)
+            : document.write(to: url, withOptions: options)
+        if succeeded {
             statusMessage = "Protected PDF exported"
             showPasswordExport = false
         } else {
@@ -395,8 +415,12 @@ final class PDFWorkspace: ObservableObject {
         let wasDirty = isDirty
         var insertionIndex = min(currentPageIndex + 1, document.pageCount)
         var inserted: [(PDFPage, Int)] = []
+        var skipped = 0
         for url in panel.urls {
-            guard let extra = PDFDocument(url: url), !extra.isLocked else { continue }
+            guard let extra = PDFDocument(url: url), !extra.isLocked else {
+                skipped += 1
+                continue
+            }
             for index in 0..<extra.pageCount {
                 if let page = extra.page(at: index)?.copy() as? PDFPage {
                     document.insert(page, at: insertionIndex)
@@ -405,13 +429,18 @@ final class PDFWorkspace: ObservableObject {
                 }
             }
         }
-        guard !inserted.isEmpty else { return }
+        guard !inserted.isEmpty else {
+            presentError(skipped == 1
+                ? "That PDF is password protected and could not be merged."
+                : "Those PDFs are password protected and could not be merged.")
+            return
+        }
         registerEdit(wasDirtyBefore: wasDirty, undo: {
             for (page, _) in inserted.reversed() { removePage(page, from: document) }
         }, redo: {
             for (page, index) in inserted { document.insert(page, at: min(index, document.pageCount)) }
         })
-        changed("PDFs merged")
+        changed(skipped == 0 ? "PDFs merged" : "PDFs merged, \(skipped) skipped because they are protected")
     }
 
     func importImages() {
@@ -431,20 +460,21 @@ final class PDFWorkspace: ObservableObject {
                 inserted.append((page, index))
             }
         }
-        if destination.pageCount > 0 {
+        guard !inserted.isEmpty else { return }
+        if !hadDocument {
             pdfDocument = destination
             fileURL = nil
-            registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
-                for (page, _) in inserted.reversed() { removePage(page, from: destination) }
-                if !hadDocument { self?.pdfDocument = nil }
-            }, redo: { [weak self] in
-                if !hadDocument { self?.pdfDocument = destination }
-                for (page, index) in inserted where destination.index(for: page) == NSNotFound {
-                    destination.insert(page, at: min(index, destination.pageCount))
-                }
-            })
-            changed("Images imported")
         }
+        registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
+            for (page, _) in inserted.reversed() { removePage(page, from: destination) }
+            if !hadDocument { self?.pdfDocument = nil }
+        }, redo: { [weak self] in
+            if !hadDocument { self?.pdfDocument = destination }
+            for (page, index) in inserted where destination.index(for: page) == NSNotFound {
+                destination.insert(page, at: min(index, destination.pageCount))
+            }
+        })
+        changed(hadDocument ? "Images added as pages" : "Images imported")
     }
 
     func extractCurrentPage() {
@@ -500,6 +530,10 @@ final class PDFWorkspace: ObservableObject {
 
     func deleteCurrentPage() {
         guard let document = pdfDocument, document.pageCount > 0 else { return }
+        guard document.pageCount > 1 else {
+            statusMessage = "A document needs at least one page"
+            return
+        }
         if preferences.confirmPageDeletion,
            !confirmAction(title: "Delete Page?", message: "You can undo this action with Command-Z.") { return }
         guard let page = document.page(at: currentPageIndex) else { return }
@@ -594,7 +628,7 @@ final class PDFWorkspace: ObservableObject {
             let item = PDFAnnotation(bounds: rect, forType: .square, withProperties: nil)
             item.color = .black
             item.interiorColor = .black
-            item.contents = "Redaction — export a flattened copy"
+            item.contents = RedactionFlattener.marker
             let border = PDFBorder()
             border.lineWidth = 0
             item.border = border
@@ -1593,7 +1627,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     private func rememberCurrentView(zoom: Double? = nil) {
-        guard let url = fileURL else { return }
+        guard !sessionDiscarded, let url = fileURL else { return }
         preferences.rememberDocument(
             url,
             pageIndex: currentPageIndex,
@@ -1718,7 +1752,7 @@ final class PDFWorkspace: ObservableObject {
         finishActiveTextEditing()
         temporaryAutosaveWorkItem?.cancel()
         temporaryAutosaveWorkItem = nil
-        guard preferences.temporaryAutosave, isDirty, let document = pdfDocument else { return }
+        guard !sessionDiscarded, preferences.temporaryAutosave, isDirty, let document = pdfDocument else { return }
         let succeeded = recoveryStore.write(
             document: document,
             identifier: recoveryIdentifier,
@@ -1732,10 +1766,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func confirmDeliberateClose() -> Bool {
-        guard isDirty else {
-            discardSessionAfterDeliberateClose()
-            return true
-        }
+        guard isDirty else { return closeSessionDeliberately(saving: false) }
 
         let alert = NSAlert()
         alert.alertStyle = .warning
@@ -1747,15 +1778,35 @@ final class PDFWorkspace: ObservableObject {
 
         switch alert.runModal() {
         case .alertFirstButtonReturn:
-            guard saveForClosing() else { return false }
-            discardSessionAfterDeliberateClose()
-            return true
+            return closeSessionDeliberately(saving: true)
         case .alertSecondButtonReturn:
-            discardSessionAfterDeliberateClose()
-            return true
+            return closeSessionDeliberately(saving: false)
         default:
             return false
         }
+    }
+
+    /// Ends the session for a window the user closed on purpose. Once this runs the
+    /// document must not come back on the next launch, so everything that could bring it
+    /// back — the recovery copy, the remembered document, a late view update — is shut off.
+    @discardableResult
+    func closeSessionDeliberately(saving: Bool) -> Bool {
+        if saving, !saveForClosing() { return false }
+        sessionDiscarded = true
+        clearTemporaryAutosave()
+        if let rememberedURL = preferences.lastDocumentURL,
+           let fileURL,
+           rememberedURL.standardizedFileURL == fileURL.standardizedFileURL {
+            preferences.forgetLastDocument()
+        }
+        return true
+    }
+
+    /// Records the document for the next launch while the app is shutting down, so a
+    /// window that is still open is remembered even when another window was closed first.
+    func rememberSessionForTermination() {
+        guard !sessionDiscarded, fileURL != nil else { return }
+        rememberCurrentView()
     }
 
     func prepareForApplicationTermination() {
@@ -1763,7 +1814,7 @@ final class PDFWorkspace: ObservableObject {
     }
 
     private func scheduleTemporaryAutosave() {
-        guard preferences.temporaryAutosave, pdfDocument != nil else { return }
+        guard !sessionDiscarded, preferences.temporaryAutosave, pdfDocument != nil else { return }
         temporaryAutosaveWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
             self?.flushTemporaryAutosave()
@@ -1776,16 +1827,6 @@ final class PDFWorkspace: ObservableObject {
         temporaryAutosaveWorkItem?.cancel()
         temporaryAutosaveWorkItem = nil
         recoveryStore.discard(recoveryIdentifier)
-    }
-
-    private func discardSessionAfterDeliberateClose() {
-        clearTemporaryAutosave()
-        guard let rememberedURL = preferences.lastDocumentURL else { return }
-        if let fileURL, rememberedURL.standardizedFileURL == fileURL.standardizedFileURL {
-            preferences.forgetLastDocument()
-        } else if fileURL == nil {
-            preferences.forgetLastDocument()
-        }
     }
 
     private func prepareToReplaceCurrentDocument() {
