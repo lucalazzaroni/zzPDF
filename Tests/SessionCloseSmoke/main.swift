@@ -159,6 +159,20 @@ struct SessionCloseSmoke {
         }
         check(survivors == [first.path], "A deleted document was still reopened: \(survivors)")
 
+        // The recent list keeps what has been opened, newest first, without duplicates.
+        let recents = preferences.recentDocumentURLs.map(\.lastPathComponent)
+        check(
+            recents.first == "secondo.pdf" || recents.first == "primo.pdf",
+            "The recent list starts with \(recents)"
+        )
+        check(Set(recents).count == recents.count, "The recent list repeats itself: \(recents)")
+        check(
+            !recents.contains { $0 == "secondo.pdf" } || FileManager.default.fileExists(atPath: second.path),
+            "The recent list offers a file that is gone"
+        )
+        preferences.clearRecentDocuments()
+        check(preferences.recentDocumentURLs.isEmpty, "Clearing the recent list left entries behind")
+
         print("Session close and restore smoke test passed.")
     }
 

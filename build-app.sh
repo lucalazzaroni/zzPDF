@@ -65,12 +65,26 @@ SDK_MAJOR="${SDK_VERSION%%.*}"
 
 mkdir -p "$BUILD_DIR" "$CACHE_DIR" "$OUTPUT_DIR"
 
-CLANG_MODULE_CACHE_PATH="$CACHE_DIR" \
-SDKROOT="$SDK_PATH" \
-swift build -c release --disable-sandbox --scratch-path "$BUILD_DIR"
+EXECUTABLE_PATH=""
+if CLANG_MODULE_CACHE_PATH="$CACHE_DIR" SDKROOT="$SDK_PATH" \
+    swift build -c release --disable-sandbox --scratch-path "$BUILD_DIR"; then
+    EXECUTABLE_PATH="$(find "$BUILD_DIR" -type f -path '*/release/zzPDF' -perm +111 | head -n 1)"
+fi
 
-EXECUTABLE_PATH="$(find "$BUILD_DIR" -type f -path '*/release/zzPDF' -perm +111 | head -n 1)"
+# Swift Package Manager itself can be broken by a half-applied Command Line Tools update,
+# while the compiler still works. The target is one module with no dependencies, so
+# compiling the sources directly produces the same binary.
 if [[ -z "$EXECUTABLE_PATH" ]]; then
+    echo "swift build is unavailable; compiling the sources directly."
+    DIRECT_EXECUTABLE="$BUILD_DIR/zzPDF-direct"
+    mkdir -p "$BUILD_DIR"
+    CLANG_MODULE_CACHE_PATH="$CACHE_DIR" SDKROOT="$SDK_PATH" \
+        xcrun swiftc -O -parse-as-library -target arm64-apple-macos14.0 \
+        "$PROJECT_DIR"/Sources/zzPDF/*.swift -o "$DIRECT_EXECUTABLE"
+    EXECUTABLE_PATH="$DIRECT_EXECUTABLE"
+fi
+
+if [[ -z "$EXECUTABLE_PATH" || ! -x "$EXECUTABLE_PATH" ]]; then
     echo "zzPDF executable not found after compilation." >&2
     exit 1
 fi

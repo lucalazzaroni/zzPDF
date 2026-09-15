@@ -22,6 +22,7 @@ final class AppPreferences: ObservableObject {
         static let signatureStrokes = "signatureStrokes"
         static let signatureImage = "signatureImage"
         static let sessionDocuments = "sessionDocuments"
+        static let recentDocuments = "recentDocuments"
     }
 
     private let defaults: UserDefaults
@@ -113,18 +114,31 @@ final class AppPreferences: ObservableObject {
         }
     }
 
+    /// The recent list is kept here rather than in NSDocumentController, which records
+    /// nothing in an app that is not built on NSDocument.
+    private static let maximumRecentDocuments = 10
+
     func noteRecentDocument(_ url: URL) {
+        let path = url.standardizedFileURL.path
+        var paths = (defaults.array(forKey: Key.recentDocuments) as? [String] ?? []).filter { $0 != path }
+        paths.insert(path, at: 0)
+        defaults.set(Array(paths.prefix(Self.maximumRecentDocuments)), forKey: Key.recentDocuments)
         NSDocumentController.shared.noteNewRecentDocumentURL(url)
         recentDocumentsToken = UUID()
     }
 
     func clearRecentDocuments() {
+        defaults.removeObject(forKey: Key.recentDocuments)
         NSDocumentController.shared.clearRecentDocuments(nil)
         recentDocumentsToken = UUID()
     }
 
+    /// Recently opened files that are still on disk, newest first.
     var recentDocumentURLs: [URL] {
-        NSDocumentController.shared.recentDocumentURLs
+        let paths = defaults.array(forKey: Key.recentDocuments) as? [String] ?? []
+        return paths
+            .filter { FileManager.default.fileExists(atPath: $0) }
+            .map { URL(fileURLWithPath: $0) }
     }
 
     /// One entry per document that was open when the app last quit, frontmost first.
@@ -208,6 +222,8 @@ final class AppPreferences: ObservableObject {
         exportFolderPath = ""
         signatureStrokes = []
         signatureImageData = nil
+        clearRecentDocuments()
+        forgetAllDocuments()
     }
 
     private func saveColor(_ color: Color, key: String) {

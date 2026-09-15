@@ -32,11 +32,15 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.
 - Current native macOS window controls, with system-standard sizing and spacing.
 - Independent document windows and native tabs, with `Command-N` for a new window and `Command-T` for a new tab.
 - Optional temporary recovery copies for unsaved edits, restored after an unexpected close or `Command-Q` without overwriting the original PDF. Deliberately closing a window or tab asks whether to save and discards its recovery state.
-- Optional startup restoration of the previous saved PDF, including its page, zoom, and page layout.
-- Page reordering, rotation, duplication, deletion, cropping, and extraction.
-- PDF merging and PDF creation from image files.
-- OCR for the current page using Apple Vision.
-- Standard save, flattened export, and password protection.
+- Optional startup restoration of every document that was open, each in its own window, including page, zoom, and page layout.
+- A sidebar that switches between page thumbnails, the PDF's own table of contents, and a list of every annotation that jumps to it when clicked.
+- Multi-selected thumbnails, drag-to-reorder, and rotation, duplication, extraction, and deletion applied to the whole selection in one undo step.
+- Page cropping, PDF merging, and PDF creation from image files.
+- Straight lines, arrows, and polygons drawn corner by corner, with adjustable highlight strength.
+- OCR for the current page using Apple Vision, and a pass that rebuilds scanned pages with an invisible text layer so the document becomes searchable.
+- A signature that is remembered between launches, drawn or imported.
+- Recent documents, files dropped on the window, and PDFs opened from the Finder in their own window.
+- Standard save, flattened export, page images, a smaller recompressed copy, password protection, and removing a password from a document you unlocked.
 
 A redaction becomes irreversible only in a copy produced with **Export Flattened**, which rewrites every redacted page as an image so the hidden words are gone from the file rather than merely covered. See [Redaction](#redaction).
 
@@ -56,7 +60,7 @@ cd zzPDF
 ./build-app.sh
 ```
 
-The script picks the newest installed macOS SDK that can actually compile SwiftUI, because some Command Line Tools releases ship an SDK whose SwiftUI needs a macro plugin the toolchain does not install. Set `ZZPDF_SDK_PATH` to override the choice.
+The script picks the newest installed macOS SDK that can actually compile SwiftUI, because some Command Line Tools releases ship an SDK whose SwiftUI needs a macro plugin the toolchain does not install. Set `ZZPDF_SDK_PATH` to override the choice. If Swift Package Manager itself is broken by a half-applied Command Line Tools update, the script compiles the sources directly instead.
 
 The script creates:
 
@@ -91,6 +95,9 @@ Tests/PrintSmoke/       standalone native print-operation regression check
 Tests/TextEditSmoke/    standalone page-text editing regression check
 Tests/RedactionSmoke/   standalone redaction-flattening regression check
 Tests/SessionCloseSmoke/ standalone window-close and session-restore regression check
+Tests/OCRSearchableSmoke/ standalone searchable-OCR regression check
+Tests/PageSelectionSmoke/ standalone multi-page and annotation-list regression check
+Tests/DrawingToolsSmoke/ standalone line, arrow, polygon, and export regression check
 ```
 
 ## Redaction
@@ -112,6 +119,10 @@ Consequences worth knowing:
 - A longer replacement first widens into the page margin, then shrinks by up to 30%, and only then wraps onto extra lines.
 - Editing a block of lines reflows it inside the block, so the replacement uses the font's own line spacing rather than the document's.
 - Text over a photograph or a gradient gets a flat rectangle of the dominant color behind it, which will be visible.
+
+## Searchable Scans
+
+**Make Scanned Pages Searchable** runs Apple Vision over every page that carries no text and rebuilds those pages with the recognized words drawn on top in invisible text mode. The page looks exactly as it did, but the words can be selected, copied, and found with `Command-F`, in zzPDF and in any other reader. Pages that already have text are left alone, and the whole pass is a single undo step.
 
 ## Project Status
 

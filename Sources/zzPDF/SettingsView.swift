@@ -21,7 +21,7 @@ struct SettingsView: View {
     private var generalSettings: some View {
         Form {
             Section("Startup") {
-                Toggle("Restore the previously open PDF", isOn: $preferences.restoreLastDocument)
+                Toggle("Reopen the documents that were open", isOn: $preferences.restoreLastDocument)
                 Toggle("Keep temporary recovery copies", isOn: $preferences.temporaryAutosave)
                     .onChange(of: preferences.temporaryAutosave) { _, _ in applyPreferences() }
                 Picker("Initial tool", selection: $preferences.initialTool) {

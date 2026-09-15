@@ -25,7 +25,11 @@ enum SidebarMode: String, CaseIterable, Identifiable {
 
 struct PageSidebar: View {
     @EnvironmentObject private var workspace: PDFWorkspace
-    @State private var mode: SidebarMode = .pages
+    @State private var mode: SidebarMode
+
+    init(mode: SidebarMode = .pages) {
+        _mode = State(initialValue: mode)
+    }
 
     var body: some View {
         VStack(spacing: 0) {

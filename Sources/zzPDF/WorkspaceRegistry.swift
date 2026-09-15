@@ -88,9 +88,10 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Works out everything the app should reopen: unsaved work waiting in the recovery
     /// store first, then the documents that were on screen when it last quit. Runs once.
-    func prepareRestoreQueue(preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore = .shared) {
+    func prepareRestoreQueue(preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore? = nil) {
         guard shouldRestoreInitialWindow() else { return }
-        let recoveries = preferences.temporaryAutosave ? recoveryStore.pendingRecords() : []
+        let store = recoveryStore ?? .shared
+        let recoveries = preferences.temporaryAutosave ? store.pendingRecords() : []
         restoreQueue = Array(repeating: .recovery, count: recoveries.count)
         guard preferences.restoreLastDocument else { return }
         let recovered = Set(recoveries.compactMap(\.originalPath))
