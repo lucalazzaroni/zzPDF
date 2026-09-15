@@ -115,6 +115,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     private var pageOverlays: [ObjectIdentifier: PDFPageFormOverlay] = [:]
     private var requestedEditor: (PDFAnnotation, PDFPage)?
     private var requestedInlineEditor: (annotation: PDFAnnotation, page: PDFPage, singleLine: Bool)?
+    private var polygonPoints: [CGPoint] = []
+    private weak var polygonPage: PDFPage?
     private var hoveredTextBounds: CGRect?
     private var hoveredTextPoint: CGPoint?
     private weak var hoveredTextPage: PDFPage?
@@ -211,11 +213,35 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     override var acceptsFirstResponder: Bool { true }
 
     override func keyDown(with event: NSEvent) {
+        if !polygonPoints.isEmpty {
+            switch event.keyCode {
+            case 53:                       // Escape abandons the shape being drawn
+                cancelPolygon()
+                return
+            case 36, 76:                   // Return closes it
+                finishPolygon(closed: true)
+                return
+            default:
+                break
+            }
+        }
         if event.keyCode == 53, let workspace, workspace.activeTool != .select {
             workspace.activateSelectTool()
             return
         }
         super.keyDown(with: event)
+    }
+
+    private func finishPolygon(closed: Bool) {
+        defer { cancelPolygon() }
+        guard let workspace, let page = polygonPage, polygonPoints.count > 1 else { return }
+        workspace.addPolygon(points: polygonPoints, on: page, closed: closed && polygonPoints.count > 2)
+    }
+
+    private func cancelPolygon() {
+        polygonPoints.removeAll()
+        polygonPage = nil
+        interactionOverlay.needsDisplay = true
     }
 
     override func mouseMoved(with event: NSEvent) {
@@ -250,7 +276,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         case .strikeOut: return strikeOutCursor
         case .text: return .iBeam
         case .draw: return drawingCursor
-        case .note, .rectangle, .oval, .redact, .signature: return .crosshair
+        case .note, .line, .arrow, .polygon, .rectangle, .oval, .redact, .signature: return .crosshair
         }
     }
 
@@ -276,6 +302,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     }
 
     func cancelActiveInteraction() {
+        polygonPoints.removeAll()
+        polygonPage = nil
         gesturePoints.removeAll()
         gesturePage = nil
         hoverPoint = nil
@@ -434,6 +462,22 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         }
 
         guard let page = page(for: viewPoint, nearest: false) else { return }
+
+        if workspace.activeTool == .polygon {
+            if polygonPage !== page { cancelPolygon() }
+            polygonPage = page
+            if event.clickCount > 1 {
+                finishPolygon(closed: true)
+                return
+            }
+            polygonPoints.append(convert(viewPoint, to: page))
+            workspace.statusMessage = polygonPoints.count < 2
+                ? "Click to add the next corner"
+                : "Return closes the shape, double-click finishes it, Escape discards it"
+            interactionOverlay.needsDisplay = true
+            return
+        }
+
         gesturePage = page
         gesturePoints = [convert(viewPoint, to: page)]
         if workspace.activeTool == .note || workspace.activeTool == .text || workspace.activeTool == .signature {
@@ -496,7 +540,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             }
             return
         }
-        if workspace.activeTool == .draw || workspace.activeTool == .rectangle ||
+        if workspace.activeTool == .draw || workspace.activeTool.isLineTool ||
+            workspace.activeTool == .rectangle ||
             workspace.activeTool == .oval || workspace.activeTool == .redact {
             let viewPoint = convert(event.locationInWindow, from: nil)
             gesturePoints.append(convert(viewPoint, to: page))
@@ -660,6 +705,10 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             outline.stroke()
         }
 
+        if let page = polygonPage, !polygonPoints.isEmpty {
+            drawPolygonPreview(on: page, workspace: workspace)
+        }
+
         if let page = gesturePage, gesturePoints.count > 1 {
             drawGesturePreview(on: page, workspace: workspace)
         }
@@ -674,6 +723,11 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         let viewPoints = gesturePoints.map { convert($0, from: page) }
         guard let first = viewPoints.first, let last = viewPoints.last else { return }
         let color = workspace.nsAnnotationColor
+
+        if workspace.activeTool.isLineTool {
+            drawLinePreview(from: first, to: last, color: color, arrow: workspace.activeTool == .arrow, width: workspace.lineWidth)
+            return
+        }
 
         if workspace.activeTool == .draw {
             let path = NSBezierPath()
@@ -715,6 +769,50 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             color.setStroke()
         }
         path.stroke()
+    }
+
+    private func drawLinePreview(from start: CGPoint, to end: CGPoint, color: NSColor, arrow: Bool, width: Double) {
+        let path = NSBezierPath()
+        path.move(to: start)
+        path.line(to: end)
+        path.lineWidth = max(width * scaleFactor, 1)
+        path.lineCapStyle = .round
+        color.setStroke()
+        path.stroke()
+        guard arrow else { return }
+        let angle = atan2(end.y - start.y, end.x - start.x)
+        let size = max(9, width * 3.4 * scaleFactor)
+        let head = NSBezierPath()
+        head.move(to: end)
+        head.line(to: CGPoint(x: end.x - size * cos(angle - .pi / 7), y: end.y - size * sin(angle - .pi / 7)))
+        head.line(to: CGPoint(x: end.x - size * cos(angle + .pi / 7), y: end.y - size * sin(angle + .pi / 7)))
+        head.close()
+        color.setFill()
+        head.fill()
+    }
+
+    private func drawPolygonPreview(on page: PDFPage, workspace: PDFWorkspace) {
+        let viewPoints = polygonPoints.map { convert($0, from: page) }
+        guard let first = viewPoints.first else { return }
+        let path = NSBezierPath()
+        path.move(to: first)
+        for point in viewPoints.dropFirst() { path.line(to: point) }
+        if let hoverPoint, hoverPage === page {
+            path.line(to: convert(hoverPoint, from: page))
+        }
+        path.lineWidth = max(workspace.lineWidth * scaleFactor, 1)
+        path.lineJoinStyle = .round
+        workspace.nsAnnotationColor.setStroke()
+        path.stroke()
+
+        for point in viewPoints {
+            let dot = NSBezierPath(ovalIn: CGRect(x: point.x - 3, y: point.y - 3, width: 6, height: 6))
+            NSColor.white.setFill()
+            dot.fill()
+            NSColor.controlAccentColor.setStroke()
+            dot.lineWidth = 1.5
+            dot.stroke()
+        }
     }
 
     private func editableTextBounds(at point: CGPoint, on page: PDFPage) -> CGRect? {

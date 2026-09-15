@@ -90,6 +90,15 @@ struct SettingsView: View {
                     }
                 }
             }
+            Section("Markup") {
+                LabeledContent("Highlight strength") {
+                    HStack {
+                        Slider(value: $preferences.highlightOpacity, in: 0.1...1)
+                            .frame(width: 190)
+                        Text("\(Int(preferences.highlightOpacity * 100))%").monospacedDigit().frame(width: 52)
+                    }
+                }
+            }
             Section("Forms") {
                 Toggle("Automatically shrink text to fit form fields", isOn: $preferences.autoFitFormText)
                     .onChange(of: preferences.autoFitFormText) { _, _ in applyPreferences() }

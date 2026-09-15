@@ -135,6 +135,10 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Export Unprotected Copy…") { document?.removePasswordProtection() }
                 .disabled(document?.isPasswordProtected != true)
+            Button("Export Pages as Images…") { document?.exportPagesAsImages() }
+                .disabled(document?.hasDocument != true)
+            Button("Export Smaller Copy…") { document?.exportSmallerCopy() }
+                .disabled(document?.hasDocument != true)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") { document?.printDocument() }

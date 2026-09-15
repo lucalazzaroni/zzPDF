@@ -230,7 +230,10 @@ struct ToolPicker: View {
                     MarkupToolPicker()
                 } else if tool == .rectangle {
                     ShapeToolPicker()
-                } else if tool != .underline && tool != .strikeOut && tool != .oval {
+                } else if tool == .line {
+                    LineToolPicker()
+                } else if tool != .underline && tool != .strikeOut && tool != .oval
+                            && tool != .arrow && tool != .polygon {
                     Button {
                         if tool == .signature && !workspace.hasSignature {
                             workspace.showSignaturePad = true
@@ -284,6 +287,31 @@ struct MarkupToolPicker: View {
         } label: {
             Label(tool.label, systemImage: tool.symbol)
         }
+    }
+}
+
+struct LineToolPicker: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+
+    private var isSelected: Bool {
+        workspace.activeTool.isLineTool || workspace.activeTool == .polygon
+    }
+
+    var body: some View {
+        Menu {
+            Button { workspace.activateTool(.line) } label: { Label("Line", systemImage: "line.diagonal") }
+            Button { workspace.activateTool(.arrow) } label: { Label("Arrow", systemImage: "line.diagonal.arrow") }
+            Button { workspace.activateTool(.polygon) } label: { Label("Polygon", systemImage: "pentagon") }
+        } label: {
+            SubtoolMenuLabel(
+                symbol: isSelected ? workspace.activeTool.symbol : "line.diagonal.arrow",
+                selected: isSelected
+            )
+        }
+        .menuStyle(.borderlessButton)
+        .menuIndicator(.hidden)
+        .fixedSize()
+        .help(isSelected ? workspace.activeTool.label : "Lines and Shapes")
     }
 }
 

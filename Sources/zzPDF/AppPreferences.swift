@@ -15,6 +15,7 @@ final class AppPreferences: ObservableObject {
         static let shapeHasFill = "shapeHasFill"
         static let shapeFillColor = "shapeFillColor"
         static let autoFitFormText = "autoFitFormText"
+        static let highlightOpacity = "highlightOpacity"
         static let confirmPageDeletion = "confirmPageDeletion"
         static let confirmFlattenedExport = "confirmFlattenedExport"
         static let exportFolderPath = "exportFolderPath"
@@ -37,6 +38,7 @@ final class AppPreferences: ObservableObject {
     @Published var shapeHasFill: Bool { didSet { defaults.set(shapeHasFill, forKey: Key.shapeHasFill) } }
     @Published var shapeFillColor: Color { didSet { saveColor(shapeFillColor, key: Key.shapeFillColor) } }
     @Published var autoFitFormText: Bool { didSet { defaults.set(autoFitFormText, forKey: Key.autoFitFormText) } }
+    @Published var highlightOpacity: Double { didSet { defaults.set(highlightOpacity, forKey: Key.highlightOpacity) } }
     @Published var confirmPageDeletion: Bool { didSet { defaults.set(confirmPageDeletion, forKey: Key.confirmPageDeletion) } }
     @Published var confirmFlattenedExport: Bool { didSet { defaults.set(confirmFlattenedExport, forKey: Key.confirmFlattenedExport) } }
     @Published var exportFolderPath: String { didSet { defaults.set(exportFolderPath, forKey: Key.exportFolderPath) } }
@@ -56,6 +58,7 @@ final class AppPreferences: ObservableObject {
             Key.textFontSize: 15.0,
             Key.shapeHasFill: false,
             Key.autoFitFormText: true,
+            Key.highlightOpacity: 0.45,
             Key.confirmPageDeletion: true,
             Key.confirmFlattenedExport: true,
             Key.exportFolderPath: ""
@@ -73,6 +76,7 @@ final class AppPreferences: ObservableObject {
         shapeHasFill = defaults.bool(forKey: Key.shapeHasFill)
         shapeFillColor = Self.loadColor(defaults: defaults, key: Key.shapeFillColor) ?? .black
         autoFitFormText = defaults.bool(forKey: Key.autoFitFormText)
+        highlightOpacity = max(0.05, min(defaults.double(forKey: Key.highlightOpacity), 1))
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
@@ -198,6 +202,7 @@ final class AppPreferences: ObservableObject {
         shapeHasFill = false
         shapeFillColor = .black
         autoFitFormText = true
+        highlightOpacity = 0.45
         confirmPageDeletion = true
         confirmFlattenedExport = true
         exportFolderPath = ""

@@ -247,6 +247,9 @@ struct PageThumbnail: View {
 
 struct InspectorPanel: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @EnvironmentObject private var preferences: AppPreferences
+
+    static let fontFamilies = NSFontManager.shared.availableFontFamilies
 
     var body: some View {
         ScrollView {
@@ -297,7 +300,7 @@ struct InspectorPanel: View {
             if workspace.activeTool == .editText, workspace.selectedAnnotationIsFreeText {
                 replacedTextControls
             }
-            if ![.select, .fillForms, .editText, .highlight, .redact].contains(workspace.activeTool) {
+            if ![.select, .fillForms, .editText, .redact].contains(workspace.activeTool) {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -305,7 +308,18 @@ struct InspectorPanel: View {
                         .labelsHidden()
                 }
             }
-            if [.draw, .signature].contains(workspace.activeTool) ||
+            if workspace.activeTool == .highlight {
+                VStack(alignment: .leading, spacing: 4) {
+                    HStack {
+                        Text("Highlight Strength").font(.callout)
+                        Spacer()
+                        Text("\(Int(preferences.highlightOpacity * 100))%")
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    }
+                    Slider(value: $preferences.highlightOpacity, in: 0.1...1)
+                }
+            }
+            if [.draw, .signature, .line, .arrow, .polygon].contains(workspace.activeTool) ||
                 ([.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape) {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
@@ -361,6 +375,9 @@ struct InspectorPanel: View {
         case .note: "Click the page, then type the note immediately."
         case .text: "Click the page to insert the text."
         case .draw: "Drag on the page to draw freehand."
+        case .line: "Drag to draw a straight line."
+        case .arrow: "Drag from the tail to the head of the arrow."
+        case .polygon: "Click each corner. Return closes the shape, double-click finishes it, Escape discards it."
         case .rectangle, .oval: "Drag to draw the shape. A live preview shows its size."
         case .redact: "Drag over sensitive content, then export a flattened copy to make the redaction permanent."
         case .signature: "Move over the page to preview the signature, then click to place it."
@@ -421,6 +438,41 @@ struct InspectorPanel: View {
                     }
                     .controlSize(.small)
                     selectedTextSizeControls
+                }
+                HStack {
+                    Picker("", selection: Binding(
+                        get: { workspace.selectedTextFontFamily },
+                        set: { workspace.setSelectedTextFontFamily($0) }
+                    )) {
+                        ForEach(InspectorPanel.fontFamilies, id: \.self) { family in
+                            Text(family).tag(family)
+                        }
+                    }
+                    .labelsHidden()
+                    Button {
+                        workspace.toggleSelectedTextTrait(bold: true)
+                    } label: {
+                        Image(systemName: "bold")
+                            .frame(width: 22, height: 20)
+                            .background(
+                                workspace.selectedTextIsBold ? Color.accentColor.opacity(0.25) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Bold")
+                    Button {
+                        workspace.toggleSelectedTextTrait(bold: false)
+                    } label: {
+                        Image(systemName: "italic")
+                            .frame(width: 22, height: 20)
+                            .background(
+                                workspace.selectedTextIsItalic ? Color.accentColor.opacity(0.25) : Color.clear,
+                                in: RoundedRectangle(cornerRadius: 5)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .help("Italic")
                 }
                 HStack {
                     Text("Text Color").font(.callout)
@@ -581,6 +633,8 @@ struct InspectorPanel: View {
             }
             .disabled(workspace.isRecognizingText)
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
+            Button { workspace.exportPagesAsImages() } label: { Label("Export Pages as Images…", systemImage: "photo") }
+            Button { workspace.exportSmallerCopy() } label: { Label("Export Smaller Copy…", systemImage: "arrow.down.circle") }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
                 Button { workspace.removePasswordProtection() } label: {

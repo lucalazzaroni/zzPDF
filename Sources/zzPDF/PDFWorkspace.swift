@@ -4,7 +4,7 @@ import SwiftUI
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
-    case select, fillForms, editText, highlight, underline, strikeOut, note, text, draw, rectangle, oval, redact, signature
+    case select, fillForms, editText, highlight, underline, strikeOut, note, text, draw, line, arrow, polygon, rectangle, oval, redact, signature
 
     var id: String { rawValue }
     var label: String {
@@ -18,6 +18,9 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .note: "Note"
         case .text: "Text"
         case .draw: "Draw"
+        case .line: "Line"
+        case .arrow: "Arrow"
+        case .polygon: "Polygon"
         case .rectangle: "Rectangle"
         case .oval: "Ellipse"
         case .redact: "Redact"
@@ -35,12 +38,17 @@ enum CanvasTool: String, CaseIterable, Identifiable {
         case .note: "note.text"
         case .text: "textformat"
         case .draw: "pencil.tip"
+        case .line: "line.diagonal"
+        case .arrow: "line.diagonal.arrow"
+        case .polygon: "pentagon"
         case .rectangle: "rectangle"
         case .oval: "circle"
         case .redact: "eye.slash"
         case .signature: "signature"
         }
     }
+
+    var isLineTool: Bool { self == .line || self == .arrow }
 
     var markupKind: MarkupKind? {
         switch self {
@@ -137,6 +145,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var selectedTextColor: Color = .black
     @Published var selectedTextBackground: Color = .white
     @Published var selectedTextAlignment: NSTextAlignment = .left
+    @Published var selectedTextFontFamily = "Helvetica"
     @Published var searchText = ""
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
@@ -696,6 +705,75 @@ final class PDFWorkspace: ObservableObject {
         if document.pageCount > 0 { selectPage(currentPageIndex) }
     }
 
+    @discardableResult
+    func writeSmallerCopy(to url: URL) -> Bool {
+        guard let document = pdfDocument else { return false }
+        return document.write(to: url, withOptions: [
+            .saveImagesAsJPEGOption: true,
+            .optimizeImagesForScreenOption: true
+        ])
+    }
+
+    /// Writes each selected page as a PNG, for slides, e-mail, or anything that wants a
+    /// picture rather than a PDF.
+    func exportPagesAsImages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Export"
+        panel.message = indexes.count == 1 ? "Choose where to save the image" : "Choose where to save the images"
+        if !preferences.exportFolderPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: preferences.exportFolderPath)
+        }
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let written = writePageImages(to: folder)
+        guard written > 0 else {
+            presentError("The pages could not be exported as images.")
+            return
+        }
+        statusMessage = written == 1 ? "Image exported" : "\(written) images exported"
+        _ = document
+    }
+
+    @discardableResult
+    func writePageImages(to folder: URL, dpi: CGFloat = 200) -> Int {
+        guard let document = pdfDocument else { return 0 }
+        var written = 0
+        for index in targetPageIndexes {
+            guard let page = document.page(at: index),
+                  let rendered = OCRTextLayer.render(page, dpi: dpi),
+                  let data = NSBitmapImageRep(cgImage: rendered.image).representation(using: .png, properties: [:])
+            else { continue }
+            let url = folder.appendingPathComponent("\(displayName)-\(index + 1).png")
+            if (try? data.write(to: url, options: .atomic)) != nil { written += 1 }
+        }
+        return written
+    }
+
+    /// Writes a copy with images recompressed for screen use, and says how much it saved.
+    func exportSmallerCopy() {
+        finishActiveTextEditing()
+        guard pdfDocument != nil,
+              let url = chooseSaveURL(defaultName: "\(displayName)-smaller.pdf") else { return }
+        guard writeSmallerCopy(to: url) else {
+            presentError("The smaller copy could not be written.")
+            return
+        }
+        let newSize = (try? url.resourceValues(forKeys: [.fileSizeKey]).fileSize) ?? 0
+        let oldSize = fileURL.flatMap { (try? $0.resourceValues(forKeys: [.fileSizeKey]).fileSize) } ?? 0
+        let formatter = ByteCountFormatter()
+        if oldSize > 0, newSize > 0, newSize < oldSize {
+            let saved = Int(((1 - Double(newSize) / Double(oldSize)) * 100).rounded())
+            statusMessage = "Smaller copy saved: \(formatter.string(fromByteCount: Int64(newSize))), \(saved)% less"
+        } else {
+            statusMessage = "Copy saved: \(formatter.string(fromByteCount: Int64(newSize)))"
+        }
+    }
+
     func extractSelectedPages() {
         let indexes = targetPageIndexes
         guard !indexes.isEmpty else { return }
@@ -810,7 +888,9 @@ final class PDFWorkspace: ObservableObject {
             case .strikeOut: subtype = .strikeOut
             }
             let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
-            annotation.color = kind == .highlight ? NSColor.systemYellow.withAlphaComponent(0.45) : nsAnnotationColor
+            annotation.color = kind == .highlight
+                ? nsAnnotationColor.highlightTint(alpha: preferences.highlightOpacity)
+                : nsAnnotationColor
             page.addAnnotation(annotation)
             additions.append((page, annotation))
         }
@@ -847,6 +927,12 @@ final class PDFWorkspace: ObservableObject {
             item.fontColor = color
             item.color = .clear
             annotation = item
+        case .polygon:
+            return
+        case .line, .arrow:
+            guard let first = dragPoints.first, let last = dragPoints.last,
+                  hypot(last.x - first.x, last.y - first.y) > 3 else { return }
+            annotation = makeLineAnnotation(from: first, to: last, color: color, arrow: tool == .arrow)
         case .rectangle, .oval:
             let rect = normalizedBounds(from: dragPoints, fallback: point, size: CGSize(width: 130, height: 80))
             let item = PDFAnnotation(bounds: rect, forType: tool == .rectangle ? .square : .circle, withProperties: nil)
@@ -919,6 +1005,45 @@ final class PDFWorkspace: ObservableObject {
             y: min(max(point.y - 20, pageBounds.minY), maximumY)
         )
         return CGRect(origin: origin, size: size)
+    }
+
+    /// PDFKit reads a line annotation's endpoints relative to its own bounds, not to the
+    /// page, so both are stored as offsets inside the padded rectangle.
+    private func makeLineAnnotation(from start: CGPoint, to end: CGPoint, color: NSColor, arrow: Bool) -> PDFAnnotation {
+        let padding = max(12, lineWidth * 4)
+        let bounds = CGRect(
+            x: min(start.x, end.x) - padding,
+            y: min(start.y, end.y) - padding,
+            width: abs(end.x - start.x) + padding * 2,
+            height: abs(end.y - start.y) + padding * 2
+        )
+        let item = PDFAnnotation(bounds: bounds, forType: .line, withProperties: nil)
+        item.startPoint = CGPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
+        item.endPoint = CGPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
+        if arrow { item.endLineStyle = .closedArrow }
+        item.color = color
+        let border = PDFBorder()
+        border.lineWidth = lineWidth
+        item.border = border
+        return item
+    }
+
+    /// Polygons are drawn as straight-segment ink: PDFKit has no polygon annotation, and
+    /// ink already moves, scales, and flattens correctly.
+    func addPolygon(points: [CGPoint], on page: PDFPage, closed: Bool) {
+        guard points.count > 1 else { return }
+        var vertices = points
+        if closed, let first = points.first { vertices.append(first) }
+        guard let annotation = makeInkAnnotation(points: vertices, color: nsAnnotationColor, width: lineWidth) else { return }
+        let wasDirty = isDirty
+        page.addAnnotation(annotation)
+        selectAnnotation(annotation)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            page.removeAnnotation(annotation)
+        }, redo: {
+            page.addAnnotation(annotation)
+        })
+        changed(closed ? "Polygon added" : "Polyline added")
     }
 
     private func makeInkAnnotation(points: [CGPoint], color: NSColor, width: Double) -> PDFAnnotation? {
@@ -1013,6 +1138,7 @@ final class PDFWorkspace: ObservableObject {
         guard selectedAnnotationIsFreeText, let annotation = selectedAnnotation else { return }
         selectedTextFontSize = Double(annotation.font?.pointSize ?? 15)
         selectedTextColor = Color(nsColor: annotation.fontColor ?? .black)
+        selectedTextFontFamily = annotation.font?.familyName ?? "Helvetica"
         selectedTextAlignment = annotation.alignment
         let background = linkedCover(for: annotation)?.interiorColor ?? annotation.color
         selectedTextBackground = Color(nsColor: background)
@@ -1582,6 +1708,62 @@ final class PDFWorkspace: ObservableObject {
         changed("Background updated")
     }
 
+    var selectedTextIsBold: Bool { selectedTextHasTrait(.boldFontMask) }
+    var selectedTextIsItalic: Bool { selectedTextHasTrait(.italicFontMask) }
+
+    private func selectedTextHasTrait(_ trait: NSFontTraitMask) -> Bool {
+        guard let font = selectedAnnotation?.font else { return false }
+        return NSFontManager.shared.traits(of: font).contains(trait)
+    }
+
+    func setSelectedTextFontFamily(_ family: String) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText),
+              let current = annotation.font else { return }
+        selectedTextFontFamily = family
+        let manager = NSFontManager.shared
+        guard let replacement = manager.font(
+            withFamily: family,
+            traits: manager.traits(of: current),
+            weight: manager.weight(of: current),
+            size: current.pointSize
+        ), replacement.fontName != current.fontName else { return }
+        applyFontChange(replacement, to: annotation, message: "Font changed")
+    }
+
+    func toggleSelectedTextTrait(bold: Bool) {
+        guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText),
+              let current = annotation.font else { return }
+        let manager = NSFontManager.shared
+        let trait: NSFontTraitMask = bold ? .boldFontMask : .italicFontMask
+        let replacement = manager.traits(of: current).contains(trait)
+            ? manager.convert(current, toNotHaveTrait: trait)
+            : manager.convert(current, toHaveTrait: trait)
+        guard replacement.fontName != current.fontName else {
+            statusMessage = bold ? "This font has no bold" : "This font has no italic"
+            return
+        }
+        applyFontChange(replacement, to: annotation, message: bold ? "Bold toggled" : "Italic toggled")
+    }
+
+    private func applyFontChange(_ font: NSFont, to annotation: PDFAnnotation, message: String) {
+        let oldFont = annotation.font
+        let oldBounds = annotation.bounds
+        let wasDirty = isDirty
+        applyTextFont(font, to: annotation)
+        let newBounds = annotation.bounds
+        registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
+            annotation.font = oldFont
+            annotation.bounds = oldBounds
+            self?.retainCoverBounds(for: annotation)
+        }, redo: { [weak self] in
+            annotation.font = font
+            annotation.bounds = newBounds
+            self?.retainCoverBounds(for: annotation)
+        })
+        synchronizeSelectedTextAppearance()
+        changed(message)
+    }
+
     func setSelectedTextAlignment(_ alignment: NSTextAlignment) {
         guard let annotation = selectedAnnotation, annotation.isSubtype(.freeText) else { return }
         let oldAlignment = annotation.alignment
@@ -1625,6 +1807,10 @@ final class PDFWorkspace: ObservableObject {
             width: cover.width * scaleX,
             height: cover.height * scaleY
         )
+    }
+
+    func retainCoverBounds(for annotation: PDFAnnotation) {
+        retainCover(for: annotation)
     }
 
     /// Records a reflow that must leave the opaque rectangle where it is.
@@ -2302,5 +2488,16 @@ struct AnnotationEntry: Identifiable {
         case "Signature": return "signature"
         default: return "seal"
         }
+    }
+}
+
+extension NSColor {
+    /// A highlighter version of a color: the chosen hue at the chosen strength, falling
+    /// back to yellow when the annotation color is black, which would blot out the text.
+    func highlightTint(alpha: Double) -> NSColor {
+        let base = usingColorSpace(.deviceRGB) ?? .systemYellow
+        let isNeutral = base.saturationComponent < 0.15 && base.brightnessComponent < 0.35
+        let tint = isNeutral ? NSColor.systemYellow : base
+        return tint.withAlphaComponent(max(0.05, min(alpha, 1)))
     }
 }
