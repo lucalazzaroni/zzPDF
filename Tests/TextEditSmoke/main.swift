@@ -255,6 +255,35 @@ struct TextEditSmoke {
         }
         check(!clickWorkspace.isDirty, "The click fixture stayed marked as edited")
 
+        // The editor lives in a page-space overlay that PDFKit scales with the zoom, so
+        // its text stays at the PDF point size however far the page is zoomed. Scaling the
+        // font here as well showed the text at the zoom factor over again.
+        for zoom in [1.0, 2.5] as [CGFloat] {
+            clickView.scaleFactor = zoom
+            clickView.layoutDocumentView()
+            clickWorkspace.beginTextReplacement(at: pagePoint, on: clickPage)
+            guard let zoomed = clickWorkspace.selectedAnnotation else {
+                fail("No replacement started at zoom \(zoom)")
+            }
+            if let editor = clickView.activeInlineEditor {
+                let expected = zoomed.font?.pointSize ?? 0
+                check(
+                    abs(editor.displayedFontSize - expected) < 0.01,
+                    "At zoom \(zoom) the editor draws \(editor.displayedFontSize) pt text for a \(expected) pt annotation"
+                )
+                check(
+                    abs(editor.frame.width - zoomed.bounds.width) < 1.5
+                        && abs(editor.frame.height - zoomed.bounds.height) < 1.5,
+                    "At zoom \(zoom) the editor box is \(editor.frame.size) for annotation bounds \(zoomed.bounds.size)"
+                )
+            }
+            clickWorkspace.cancelTextReplacement(zoomed)
+            check(
+                clickPage.annotations.isEmpty,
+                "Discarding the zoom \(zoom) edit left \(clickPage.annotations.count) annotations"
+            )
+        }
+
         // Replacing a line with itself has to be invisible on the page.
         check(replacementIsPixelAccurate(source: source), "Replacing text with itself changed the rendered page")
 

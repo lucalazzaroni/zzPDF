@@ -7,10 +7,12 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
     private(set) weak var annotation: PDFAnnotation?
     private let textView = NSTextView(frame: .zero)
     private var pdfFont: NSFont = .systemFont(ofSize: 12)
-    private var scale: CGFloat = 1
     private var singleLine = false
     private var didFinish = false
     private var restoresAnnotationVisibility = false
+
+    /// The point size the editor is actually drawing with, for tests and diagnostics.
+    var displayedFontSize: CGFloat { textView.font?.pointSize ?? 0 }
 
     var onCommit: ((String) -> Void)?
     var onCancel: (() -> Void)?
@@ -41,10 +43,9 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
 
     override var acceptsFirstResponder: Bool { true }
 
-    func prepare(for annotation: PDFAnnotation, singleLine: Bool, scale: CGFloat) {
+    func prepare(for annotation: PDFAnnotation, singleLine: Bool) {
         self.annotation = annotation
         self.singleLine = singleLine
-        self.scale = max(0.05, scale)
         pdfFont = annotation.font ?? .systemFont(ofSize: 12)
         textView.string = annotation.contents ?? ""
         textView.alignment = annotation.alignment
@@ -55,8 +56,7 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
         applyAppearance()
     }
 
-    func updateLayout(frame: NSRect, scale: CGFloat) {
-        self.scale = max(0.05, scale)
+    func updateLayout(frame: NSRect) {
         self.frame = frame
         textView.frame = bounds
         textView.minSize = bounds.size
@@ -89,11 +89,11 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
     private func applyAppearance() {
         let background = annotation?.color ?? .clear
         layer?.backgroundColor = background.alphaComponent > 0.01 ? background.cgColor : NSColor.textBackgroundColor.cgColor
-        textView.font = TextFitting.resized(pdfFont, to: max(1, pdfFont.pointSize * scale))
-        let inset = NSSize(
-            width: FreeTextLayout.horizontalInset * scale,
-            height: max(0, FreeTextLayout.topPadding * scale)
-        )
+        // The page overlay this editor lives in is itself in page coordinates: PDFKit
+        // scales it with the zoom. So the font goes in at its PDF point size, and scaling
+        // it here as well would show the text at the zoom factor squared.
+        textView.font = pdfFont
+        let inset = NSSize(width: FreeTextLayout.horizontalInset, height: FreeTextLayout.topPadding)
         textView.textContainerInset = inset
         textView.textContainer?.containerSize = NSSize(
             width: max(1, bounds.width - inset.width * 2),
