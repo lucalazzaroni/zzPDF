@@ -47,5 +47,18 @@
             </array>
         </dict>
     </array>
+	<key>UTExportedTypeDeclarations</key>
+	<array>
+		<dict>
+			<key>UTTypeIdentifier</key>
+			<string>it.lucalazzaroni.zzpdf.page-reference</string>
+			<key>UTTypeDescription</key>
+			<string>zzPDF Page Reference</string>
+			<key>UTTypeConformsTo</key>
+			<array>
+				<string>public.data</string>
+			</array>
+		</dict>
+	</array>
 </dict>
 </plist>

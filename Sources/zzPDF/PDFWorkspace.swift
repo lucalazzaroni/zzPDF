@@ -119,6 +119,7 @@ final class PDFWorkspace: ObservableObject {
     @Published var pdfDocument: PDFDocument?
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
+    @Published var selectedPageIndexes: Set<Int> = [0]
     @Published var selectedAnnotation: PDFAnnotation?
     @Published var hasTextSelection = false
     @Published var activeTool: CanvasTool = .select
@@ -521,12 +522,209 @@ final class PDFWorkspace: ObservableObject {
         if output.write(to: url) { statusMessage = "Page extracted" }
     }
 
+    // MARK: - Navigating the document
+
+    var outlineRoot: PDFOutline? {
+        guard let root = pdfDocument?.outlineRoot, root.numberOfChildren > 0 else { return nil }
+        return root
+    }
+
+    func goToOutline(_ outline: PDFOutline) {
+        if let destination = outline.destination {
+            pdfView?.go(to: destination)
+        } else if let action = outline.action as? PDFActionGoTo {
+            pdfView?.go(to: action.destination)
+        } else {
+            return
+        }
+        if let page = pdfView?.currentPage, let document = pdfDocument {
+            currentPageIndex = document.index(for: page)
+        }
+        statusMessage = outline.label ?? "Section"
+    }
+
+    /// Every annotation in the document, in reading order, for the sidebar list.
+    func annotationEntries() -> [AnnotationEntry] {
+        guard let document = pdfDocument else { return [] }
+        var entries: [AnnotationEntry] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations {
+                // Form fields, the document's own hyperlinks, the popup PDFKit pairs with
+                // every note, and the backdrop behind replaced text are not things the
+                // reader annotated, so they stay out of the list.
+                guard !annotation.isSubtype(.widget),
+                      !annotation.isSubtype(.popup),
+                      !annotation.isSubtype(.link),
+                      !isTextReplacementCover(annotation) else { continue }
+                entries.append(AnnotationEntry(annotation: annotation, pageIndex: index))
+            }
+        }
+        return entries
+    }
+
+    private func isTextReplacementCover(_ annotation: PDFAnnotation) -> Bool {
+        textAnnotation(forCover: annotation) != nil
+    }
+
+    func reveal(_ annotation: PDFAnnotation) {
+        guard let page = annotation.page, let document = pdfDocument else { return }
+        currentPageIndex = document.index(for: page)
+        pdfView?.go(to: annotation.bounds, on: page)
+        selectAnnotation(annotation)
+        rememberCurrentView()
+    }
+
     func selectPage(_ index: Int) {
         guard let document = pdfDocument, index >= 0, index < document.pageCount,
               let page = document.page(at: index) else { return }
         currentPageIndex = index
+        selectedPageIndexes = [index]
         pdfView?.go(to: page)
         rememberCurrentView()
+    }
+
+    // MARK: - Working on several pages at once
+
+    func isPageSelected(_ index: Int) -> Bool {
+        selectedPageIndexes.contains(index) || (selectedPageIndexes.isEmpty && index == currentPageIndex)
+    }
+
+    func togglePageSelection(_ index: Int) {
+        if selectedPageIndexes.contains(index) {
+            selectedPageIndexes.remove(index)
+            if selectedPageIndexes.isEmpty { selectedPageIndexes = [currentPageIndex] }
+        } else {
+            selectedPageIndexes.insert(index)
+        }
+    }
+
+    func extendPageSelection(to index: Int) {
+        let range = min(currentPageIndex, index)...max(currentPageIndex, index)
+        selectedPageIndexes = Set(range)
+    }
+
+    /// The pages an action applies to: the multiple selection when there is one, and the
+    /// page being viewed otherwise.
+    var targetPageIndexes: [Int] {
+        let indexes = selectedPageIndexes.isEmpty ? [currentPageIndex] : Array(selectedPageIndexes)
+        return indexes.filter { $0 >= 0 && $0 < pageCount }.sorted()
+    }
+
+    func reorderPage(from source: Int, to destination: Int) {
+        guard let document = pdfDocument, source != destination,
+              source >= 0, source < document.pageCount,
+              destination >= 0, destination < document.pageCount,
+              let page = document.page(at: source) else { return }
+        let wasDirty = isDirty
+        movePage(page, in: document, to: destination)
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            movePage(page, in: document, to: source)
+        }, redo: {
+            movePage(page, in: document, to: destination)
+        })
+        currentPageIndex = destination
+        selectedPageIndexes = [destination]
+        changed("Page moved")
+    }
+
+    func rotateSelectedPages(by degrees: Int) {
+        guard let document = pdfDocument else { return }
+        let pages = targetPageIndexes.compactMap { document.page(at: $0) }
+        guard !pages.isEmpty else { return }
+        let wasDirty = isDirty
+        let rotate: (Int) -> Void = { amount in
+            for page in pages { page.rotation = (page.rotation + amount + 360) % 360 }
+        }
+        rotate(degrees)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { rotate(-degrees) }, redo: { rotate(degrees) })
+        changed(pages.count == 1 ? "Page rotated" : "\(pages.count) pages rotated")
+    }
+
+    func duplicateSelectedPages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let wasDirty = isDirty
+        var copies: [(page: PDFPage, index: Int)] = []
+        for (offset, index) in indexes.enumerated() {
+            guard let copy = document.page(at: index + offset)?.copy() as? PDFPage else { continue }
+            let destination = index + offset + 1
+            document.insert(copy, at: destination)
+            copies.append((copy, destination))
+        }
+        guard !copies.isEmpty else { return }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for copy in copies.reversed() { removePage(copy.page, from: document) }
+        }, redo: {
+            for copy in copies where document.index(for: copy.page) == NSNotFound {
+                document.insert(copy.page, at: min(copy.index, document.pageCount))
+            }
+        })
+        selectedPageIndexes = Set(copies.map(\.index))
+        changed(copies.count == 1 ? "Page duplicated" : "\(copies.count) pages duplicated")
+    }
+
+    func deleteSelectedPages() {
+        guard let document = pdfDocument else { return }
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        guard document.pageCount > indexes.count else {
+            statusMessage = "A document needs at least one page"
+            return
+        }
+        if preferences.confirmPageDeletion {
+            let message = indexes.count == 1
+                ? "You can undo this action with Command-Z."
+                : "\(indexes.count) pages will be removed. You can undo this action with Command-Z."
+            guard confirmAction(title: indexes.count == 1 ? "Delete Page?" : "Delete Pages?", message: message) else { return }
+        }
+        let wasDirty = isDirty
+        let removed: [(page: PDFPage, index: Int)] = indexes.compactMap { index in
+            guard let page = document.page(at: index) else { return nil }
+            return (page, index)
+        }
+        for entry in removed.reversed() { removePage(entry.page, from: document) }
+        registerEdit(wasDirtyBefore: wasDirty, undo: {
+            for entry in removed { document.insert(entry.page, at: min(entry.index, document.pageCount)) }
+        }, redo: {
+            for entry in removed.reversed() { removePage(entry.page, from: document) }
+        })
+        currentPageIndex = max(0, min(indexes[0], document.pageCount - 1))
+        selectedPageIndexes = [currentPageIndex]
+        changed(removed.count == 1 ? "Page deleted" : "\(removed.count) pages deleted")
+        if document.pageCount > 0 { selectPage(currentPageIndex) }
+    }
+
+    func extractSelectedPages() {
+        let indexes = targetPageIndexes
+        guard !indexes.isEmpty else { return }
+        let name = indexes.count == 1
+            ? "Page-\(indexes[0] + 1).pdf"
+            : "\(displayName)-pages.pdf"
+        guard let url = chooseSaveURL(defaultName: name) else { return }
+        guard writeSelectedPages(to: url) else {
+            presentError("The pages could not be extracted.")
+            return
+        }
+        statusMessage = indexes.count == 1 ? "Page extracted" : "\(indexes.count) pages extracted"
+    }
+
+    @discardableResult
+    func writeSelectedPages(to url: URL) -> Bool {
+        guard let document = pdfDocument else { return false }
+        let output = PDFDocument()
+        for index in targetPageIndexes {
+            guard let page = document.page(at: index)?.copy() as? PDFPage else { continue }
+            output.insert(page, at: output.pageCount)
+        }
+        guard output.pageCount > 0 else { return false }
+        return output.write(to: url)
+    }
+
+    func remove(_ annotation: PDFAnnotation) {
+        selectAnnotation(annotation)
+        removeSelectedAnnotation()
     }
 
     func moveCurrentPage(by offset: Int) {
@@ -933,6 +1131,12 @@ final class PDFWorkspace: ObservableObject {
         annotationDraftText = annotation.contents ?? ""
         noteOriginalText = annotationDraftText
         showNoteEditor = true
+    }
+
+    /// Saves the note being edited with the given text, the way the note sheet does.
+    func commitNoteEditing(text: String) {
+        annotationDraftText = text
+        commitSelectedNote()
     }
 
     func commitSelectedNote() {
@@ -1652,6 +1856,7 @@ final class PDFWorkspace: ObservableObject {
 
     func recordCurrentPage(_ index: Int) {
         currentPageIndex = max(0, min(index, max(0, pageCount - 1)))
+        if selectedPageIndexes.count <= 1 { selectedPageIndexes = [currentPageIndex] }
         rememberCurrentView()
     }
 
@@ -2049,5 +2254,53 @@ extension NSImage {
     var pngData: Data? {
         guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
         return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
+}
+
+/// One row of the sidebar's annotation list.
+struct AnnotationEntry: Identifiable {
+    let annotation: PDFAnnotation
+    let pageIndex: Int
+
+    var id: ObjectIdentifier { ObjectIdentifier(annotation) }
+
+    var kind: String {
+        if annotation.contents == RedactionFlattener.marker { return "Redaction" }
+        if TextEditMarker.isTextEdit(annotation) { return "Replaced text" }
+        switch annotation.type ?? "" {
+        case "Highlight": return "Highlight"
+        case "Underline": return "Underline"
+        case "StrikeOut": return "Strike through"
+        case "Text": return "Note"
+        case "FreeText": return "Text"
+        case "Ink": return "Drawing"
+        case "Square": return "Rectangle"
+        case "Circle": return "Ellipse"
+        case "Stamp": return "Signature"
+        default: return annotation.type ?? "Annotation"
+        }
+    }
+
+    var summary: String {
+        let contents = (annotation.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !contents.isEmpty, contents != RedactionFlattener.marker else { return kind }
+        return contents.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    var symbol: String {
+        switch kind {
+        case "Redaction": return "eye.slash"
+        case "Replaced text": return "character.cursor.ibeam"
+        case "Highlight": return "highlighter"
+        case "Underline": return "underline"
+        case "Strike through": return "strikethrough"
+        case "Note": return "note.text"
+        case "Text": return "textformat"
+        case "Drawing": return "pencil.tip"
+        case "Rectangle": return "rectangle"
+        case "Ellipse": return "circle"
+        case "Signature": return "signature"
+        default: return "seal"
+        }
     }
 }

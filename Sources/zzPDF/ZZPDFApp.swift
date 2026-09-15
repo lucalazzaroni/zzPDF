@@ -144,18 +144,18 @@ struct AppCommands: Commands {
         CommandMenu("Pages") {
             Button("Merge Another PDF…") { document?.mergePDF() }
                 .disabled(document?.hasDocument != true)
-            Button("Extract Current Page…") { document?.extractCurrentPage() }
+            Button("Extract Selected Pages…") { document?.extractSelectedPages() }
                 .disabled(document?.hasDocument != true)
             Divider()
-            Button("Rotate Left") { document?.rotateCurrentPage(by: -90) }
+            Button("Rotate Left") { document?.rotateSelectedPages(by: -90) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
                 .disabled(document?.hasDocument != true)
-            Button("Rotate Right") { document?.rotateCurrentPage(by: 90) }
+            Button("Rotate Right") { document?.rotateSelectedPages(by: 90) }
                 .keyboardShortcut("r", modifiers: [.command, .option])
                 .disabled(document?.hasDocument != true)
-            Button("Duplicate Page") { document?.duplicateCurrentPage() }
+            Button("Duplicate Pages") { document?.duplicateSelectedPages() }
                 .disabled(document?.hasDocument != true)
-            Button("Delete Page") { document?.deleteCurrentPage() }
+            Button("Delete Pages") { document?.deleteSelectedPages() }
                 .keyboardShortcut(.delete, modifiers: [.command])
                 .disabled(document?.hasDocument != true)
         }
