@@ -79,6 +79,26 @@ final class TemporaryRecoveryStore {
         reservedIdentifiers.remove(identifier)
     }
 
+    /// Records waiting to be restored, newest first, without claiming any of them.
+    func pendingRecords() -> [TemporaryRecoveryRecord] {
+        guard let urls = try? FileManager.default.contentsOfDirectory(
+            at: directoryURL,
+            includingPropertiesForKeys: nil
+        ) else { return [] }
+        let decoder = JSONDecoder()
+        return urls
+            .filter { $0.pathExtension == "json" }
+            .compactMap { url -> TemporaryRecoveryRecord? in
+                guard let data = try? Data(contentsOf: url),
+                      let record = try? decoder.decode(TemporaryRecoveryRecord.self, from: data),
+                      !reservedIdentifiers.contains(record.identifier),
+                      FileManager.default.fileExists(atPath: recoveryPDFURL(for: record.identifier).path)
+                else { return nil }
+                return record
+            }
+            .sorted { $0.savedAt > $1.savedAt }
+    }
+
     func claimLatest() -> (TemporaryRecoveryRecord, PDFDocument)? {
         guard let urls = try? FileManager.default.contentsOfDirectory(
             at: directoryURL,

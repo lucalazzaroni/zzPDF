@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: PDFWorkspace
@@ -9,11 +10,14 @@ struct ContentView: View {
     /// Accepts PDFs and images dropped on the window: a PDF opens like any other
     /// document, images are added as pages.
     private func receiveDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        let identifier = UTType.fileURL.identifier
         var handled = false
-        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(identifier) {
             handled = true
-            _ = provider.loadObject(ofClass: URL.self) { url, _ in
-                guard let url, url.isFileURL else { return }
+            provider.loadItem(forTypeIdentifier: identifier, options: nil) { item, _ in
+                guard let data = item as? Data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil),
+                      url.isFileURL else { return }
                 Task { @MainActor in
                     if url.pathExtension.lowercased() == "pdf" {
                         NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)

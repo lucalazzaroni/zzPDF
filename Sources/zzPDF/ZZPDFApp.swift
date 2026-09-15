@@ -44,9 +44,13 @@ private struct DocumentWindow: View {
                 registry.register(workspace)
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
-                } else if registry.shouldRestoreInitialWindow() {
-                    workspace.restorePreviousDocumentIfNeeded()
+                    return
                 }
+                registry.prepareRestoreQueue(preferences: preferences)
+                if let item = registry.nextRestoreItem() {
+                    workspace.restore(item)
+                }
+                registry.openWindowsForRemainingRestores { openWindow(id: $0) }
             }
             .onReceive(NotificationCenter.default.publisher(for: .zzPDFOpenDocument)) { notification in
                 guard let url = notification.object as? URL else { return }
@@ -61,10 +65,6 @@ private struct DocumentWindow: View {
                 registry.prepareForTermination()
             }
     }
-}
-
-extension Notification.Name {
-    static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
 }
 
 struct AppCommands: Commands {

@@ -1592,20 +1592,35 @@ final class PDFWorkspace: ObservableObject {
         guard !didAttemptSessionRestore else { return }
         didAttemptSessionRestore = true
         if restoreTemporaryRecoveryIfAvailable() { return }
-        guard preferences.restoreLastDocument, let url = preferences.lastDocumentURL else { return }
+        guard preferences.restoreLastDocument,
+              let document = preferences.sessionDocuments.first else { return }
+        restoreSessionDocument(document)
+    }
+
+    /// Puts back one of the things the app had open when it last quit.
+    func restore(_ item: WorkspaceRegistry.RestoreItem) {
+        didAttemptSessionRestore = true
+        switch item {
+        case .recovery:
+            _ = restoreTemporaryRecoveryIfAvailable()
+        case .session(let document):
+            guard preferences.restoreLastDocument else { return }
+            restoreSessionDocument(document)
+        }
+    }
+
+    private func restoreSessionDocument(_ document: AppPreferences.SessionDocument) {
+        let url = document.url
         guard FileManager.default.fileExists(atPath: url.path) else {
-            preferences.forgetLastDocument()
+            preferences.forgetDocument(url)
             return
         }
-        let restoredPage = preferences.lastPageIndex
-        let restoredZoom = preferences.lastZoom
-        let restoredLayout = preferences.lastPageLayout
         load(url, rememberSession: false)
         guard pdfDocument != nil, fileURL == url else { return }
-        pageLayout = restoredLayout
-        currentPageIndex = max(0, min(restoredPage, pageCount - 1))
+        pageLayout = document.pageLayout
+        currentPageIndex = max(0, min(document.pageIndex, pageCount - 1))
         pendingRestoredPageIndex = currentPageIndex
-        pendingRestoredZoom = restoredZoom > 0 ? restoredZoom : nil
+        pendingRestoredZoom = document.zoom > 0 ? document.zoom : nil
         restoringViewState = true
         statusMessage = "Previous document restored"
     }
@@ -1833,11 +1848,7 @@ final class PDFWorkspace: ObservableObject {
         if saving, !saveForClosing() { return false }
         sessionDiscarded = true
         clearTemporaryAutosave()
-        if let rememberedURL = preferences.lastDocumentURL,
-           let fileURL,
-           rememberedURL.standardizedFileURL == fileURL.standardizedFileURL {
-            preferences.forgetLastDocument()
-        }
+        if let fileURL { preferences.forgetDocument(fileURL) }
         return true
     }
 
