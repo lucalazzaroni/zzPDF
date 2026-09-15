@@ -9,6 +9,7 @@ final class WorkspaceRegistry: ObservableObject {
     private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
     private var didAssignInitialRestoration = false
     private weak var pendingTabHost: NSWindow?
+    private var pendingDocumentURLs: [URL] = []
     private(set) var isTerminating = false
 
     func register(_ workspace: PDFWorkspace) {
@@ -51,6 +52,18 @@ final class WorkspaceRegistry: ObservableObject {
             window.makeKeyAndOrderFront(nil)
         }
     }
+
+    /// Queues a file for the next window to open, so a document arriving from the Finder
+    /// or a drop lands in its own window instead of replacing what is already on screen.
+    func enqueueDocument(_ url: URL) {
+        pendingDocumentURLs.append(url)
+    }
+
+    func dequeueDocument() -> URL? {
+        pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
+    }
+
+    var hasPendingDocuments: Bool { !pendingDocumentURLs.isEmpty }
 
     func shouldRestoreInitialWindow() -> Bool {
         guard !didAssignInitialRestoration else { return false }

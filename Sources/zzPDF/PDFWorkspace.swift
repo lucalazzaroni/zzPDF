@@ -161,8 +161,14 @@ final class PDFWorkspace: ObservableObject {
             }
         }
     }
-    @Published var savedSignature: [[CGPoint]] = []
-    @Published var signatureImage: NSImage?
+    @Published var savedSignature: [[CGPoint]] = [] {
+        didSet { preferences.signatureStrokes = savedSignature }
+    }
+    @Published var signatureImage: NSImage? {
+        didSet { preferences.signatureImageData = signatureImage?.pngData }
+    }
+    /// True when the document on disk asked for a password to open.
+    @Published private(set) var isPasswordProtected = false
 
     let preferences: AppPreferences
     private let recoveryStore: TemporaryRecoveryStore
@@ -224,6 +230,8 @@ final class PDFWorkspace: ObservableObject {
         textFontSize = preferences.textFontSize
         shapeHasFill = preferences.shapeHasFill
         shapeFillColor = preferences.shapeFillColor
+        savedSignature = preferences.signatureStrokes
+        if let data = preferences.signatureImageData { signatureImage = NSImage(data: data) }
         self.recoveryStore.reserve(recoveryIdentifier)
     }
 
@@ -245,16 +253,20 @@ final class PDFWorkspace: ObservableObject {
             presentError("The document could not be opened.")
             return
         }
+        var wasLocked = false
         if document.isLocked {
             let password = requestPassword(title: "Protected PDF", message: "Enter the password to open this document.")
             guard let password, document.unlock(withPassword: password) else {
                 presentError("Invalid password.")
                 return
             }
+            wasLocked = true
         }
         prepareToReplaceCurrentDocument()
         pdfDocument = document
         fileURL = url
+        isPasswordProtected = wasLocked
+        preferences.noteRecentDocument(url)
         currentPageIndex = 0
         activeTool = preferences.initialTool
         pageLayout = preferences.defaultPageLayout
@@ -405,6 +417,23 @@ final class PDFWorkspace: ObservableObject {
         }
     }
 
+    /// Writes a copy with the encryption removed, for a document the user has already
+    /// unlocked with its password.
+    func removePasswordProtection() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        guard isPasswordProtected else {
+            statusMessage = "This document is not password protected"
+            return
+        }
+        guard let url = chooseSaveURL(defaultName: "\(displayName)-unprotected.pdf") else { return }
+        if document.write(to: url) {
+            statusMessage = "Unprotected copy saved"
+        } else {
+            presentError("The unprotected copy could not be written.")
+        }
+    }
+
     func mergePDF() {
         guard let document = pdfDocument else { return }
         let panel = NSOpenPanel()
@@ -449,11 +478,16 @@ final class PDFWorkspace: ObservableObject {
         panel.allowsMultipleSelection = true
         panel.message = "Each image will become a page"
         guard panel.runModal() == .OK else { return }
+        addImageFiles(panel.urls)
+    }
+
+    func addImageFiles(_ urls: [URL]) {
+        guard !urls.isEmpty else { return }
         let wasDirty = isDirty
         let hadDocument = pdfDocument != nil
         let destination = pdfDocument ?? PDFDocument()
         var inserted: [(PDFPage, Int)] = []
-        for url in panel.urls {
+        for url in urls {
             if let image = NSImage(contentsOf: url), let page = PDFPage(image: image) {
                 let index = destination.pageCount
                 destination.insert(page, at: index)
@@ -1442,6 +1476,12 @@ final class PDFWorkspace: ObservableObject {
         statusMessage = "Signature image ready: click the page to place it"
     }
 
+    func forgetSignature() {
+        savedSignature = []
+        signatureImage = nil
+        statusMessage = "Signature cleared"
+    }
+
     func useDrawnSignature(_ strokes: [[CGPoint]]) {
         savedSignature = strokes
         signatureImage = nil
@@ -1498,7 +1538,6 @@ final class PDFWorkspace: ObservableObject {
 
     func setPageLayout(_ layout: PageLayoutMode) {
         pageLayout = layout
-        preferences.defaultPageLayout = layout
         pdfView?.displayMode = layout.pdfMode
         pdfView?.autoScales = true
         rememberCurrentView()
@@ -1936,4 +1975,11 @@ private func applyGeometry(to annotation: PDFAnnotation, bounds: CGRect, paths: 
 private func pathsEqual(_ lhs: [NSBezierPath], _ rhs: [NSBezierPath]) -> Bool {
     guard lhs.count == rhs.count else { return false }
     return zip(lhs, rhs).allSatisfy { $0.0.bounds == $0.1.bounds && $0.0.elementCount == $0.1.elementCount }
+}
+
+extension NSImage {
+    var pngData: Data? {
+        guard let cgImage = cgImage(forProposedRect: nil, context: nil, hints: nil) else { return nil }
+        return NSBitmapImageRep(cgImage: cgImage).representation(using: .png, properties: [:])
+    }
 }

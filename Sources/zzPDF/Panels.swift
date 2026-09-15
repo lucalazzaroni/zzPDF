@@ -185,6 +185,10 @@ struct InspectorPanel: View {
                     }
                     Button("Use Image…") { workspace.importSignatureImage() }
                 }
+                if workspace.hasSignature {
+                    Button("Forget Signature") { workspace.forgetSignature() }
+                        .controlSize(.small)
+                }
             }
             Text(toolHint)
                 .font(.caption)
@@ -421,6 +425,11 @@ struct InspectorPanel: View {
             Button { workspace.recognizeCurrentPage() } label: { Label("Recognize Text (OCR)", systemImage: "text.viewfinder") }
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
+            if workspace.isPasswordProtected {
+                Button { workspace.removePasswordProtection() } label: {
+                    Label("Export Without Password…", systemImage: "lock.open")
+                }
+            }
         }
         .buttonStyle(.plain)
     }

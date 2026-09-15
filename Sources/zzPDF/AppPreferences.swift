@@ -18,6 +18,8 @@ final class AppPreferences: ObservableObject {
         static let confirmPageDeletion = "confirmPageDeletion"
         static let confirmFlattenedExport = "confirmFlattenedExport"
         static let exportFolderPath = "exportFolderPath"
+        static let signatureStrokes = "signatureStrokes"
+        static let signatureImage = "signatureImage"
         static let lastDocumentPath = "lastDocumentPath"
         static let lastPageIndex = "lastPageIndex"
         static let lastZoom = "lastZoom"
@@ -41,6 +43,8 @@ final class AppPreferences: ObservableObject {
     @Published var confirmPageDeletion: Bool { didSet { defaults.set(confirmPageDeletion, forKey: Key.confirmPageDeletion) } }
     @Published var confirmFlattenedExport: Bool { didSet { defaults.set(confirmFlattenedExport, forKey: Key.confirmFlattenedExport) } }
     @Published var exportFolderPath: String { didSet { defaults.set(exportFolderPath, forKey: Key.exportFolderPath) } }
+    /// Bumped whenever the recent-documents list changes, so the menu rebuilds.
+    @Published var recentDocumentsToken = UUID()
 
     init(defaults: UserDefaults = .standard) {
         self.defaults = defaults
@@ -75,6 +79,51 @@ final class AppPreferences: ObservableObject {
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
+    }
+
+    /// A drawn signature, stored as one array of interleaved x/y coordinates per stroke,
+    /// so it survives quitting instead of having to be redrawn every session.
+    var signatureStrokes: [[CGPoint]] {
+        get {
+            guard let stored = defaults.array(forKey: Key.signatureStrokes) as? [[Double]] else { return [] }
+            return stored.map { stroke in
+                stride(from: 0, to: stroke.count - 1, by: 2).map { CGPoint(x: stroke[$0], y: stroke[$0 + 1]) }
+            }
+            .filter { $0.count > 1 }
+        }
+        set {
+            guard !newValue.isEmpty else {
+                defaults.removeObject(forKey: Key.signatureStrokes)
+                return
+            }
+            let encoded = newValue.map { stroke in stroke.flatMap { [Double($0.x), Double($0.y)] } }
+            defaults.set(encoded, forKey: Key.signatureStrokes)
+        }
+    }
+
+    var signatureImageData: Data? {
+        get { defaults.data(forKey: Key.signatureImage) }
+        set {
+            if let newValue {
+                defaults.set(newValue, forKey: Key.signatureImage)
+            } else {
+                defaults.removeObject(forKey: Key.signatureImage)
+            }
+        }
+    }
+
+    func noteRecentDocument(_ url: URL) {
+        NSDocumentController.shared.noteNewRecentDocumentURL(url)
+        recentDocumentsToken = UUID()
+    }
+
+    func clearRecentDocuments() {
+        NSDocumentController.shared.clearRecentDocuments(nil)
+        recentDocumentsToken = UUID()
+    }
+
+    var recentDocumentURLs: [URL] {
+        NSDocumentController.shared.recentDocumentURLs
     }
 
     var lastDocumentURL: URL? {
@@ -123,6 +172,8 @@ final class AppPreferences: ObservableObject {
         confirmPageDeletion = true
         confirmFlattenedExport = true
         exportFolderPath = ""
+        signatureStrokes = []
+        signatureImageData = nil
     }
 
     private func saveColor(_ color: Color, key: String) {

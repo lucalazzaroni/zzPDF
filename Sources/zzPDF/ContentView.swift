@@ -4,6 +4,27 @@ import SwiftUI
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @State private var dropTargeted = false
+
+    /// Accepts PDFs and images dropped on the window: a PDF opens like any other
+    /// document, images are added as pages.
+    private func receiveDroppedFiles(_ providers: [NSItemProvider]) -> Bool {
+        var handled = false
+        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
+            handled = true
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url, url.isFileURL else { return }
+                Task { @MainActor in
+                    if url.pathExtension.lowercased() == "pdf" {
+                        NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+                    } else {
+                        workspace.addImageFiles([url])
+                    }
+                }
+            }
+        }
+        return handled
+    }
 
     var body: some View {
         VStack(spacing: 0) {
@@ -33,7 +54,18 @@ struct ContentView: View {
         }
         .onOpenURL { url in
             guard url.pathExtension.lowercased() == "pdf" else { return }
-            workspace.load(url)
+            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+        }
+        .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
+            receiveDroppedFiles(providers)
+        }
+        .overlay {
+            if dropTargeted {
+                RoundedRectangle(cornerRadius: 12)
+                    .strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 3, dash: [9, 6]))
+                    .padding(8)
+                    .allowsHitTesting(false)
+            }
         }
         .onAppear {
             NSWindow.allowsAutomaticWindowTabbing = true

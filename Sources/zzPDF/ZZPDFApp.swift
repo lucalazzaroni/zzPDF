@@ -12,7 +12,7 @@ struct ZZPDFApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.automatic)
-        .commands { AppCommands(registry: registry) }
+        .commands { AppCommands(registry: registry, preferences: preferences) }
         Settings {
             SettingsView()
                 .environmentObject(preferences)
@@ -25,6 +25,7 @@ private struct DocumentWindow: View {
     @ObservedObject var preferences: AppPreferences
     @ObservedObject var registry: WorkspaceRegistry
     @StateObject private var workspace: PDFWorkspace
+    @Environment(\.openWindow) private var openWindow
 
     init(preferences: AppPreferences, registry: WorkspaceRegistry) {
         self.preferences = preferences
@@ -41,9 +42,20 @@ private struct DocumentWindow: View {
             .background(DocumentWindowAccessor(workspace: workspace, registry: registry))
             .onAppear {
                 registry.register(workspace)
-                if registry.shouldRestoreInitialWindow() {
+                if let url = registry.dequeueDocument() {
+                    workspace.load(url)
+                } else if registry.shouldRestoreInitialWindow() {
                     workspace.restorePreviousDocumentIfNeeded()
                 }
+            }
+            .onReceive(NotificationCenter.default.publisher(for: .zzPDFOpenDocument)) { notification in
+                guard let url = notification.object as? URL else { return }
+                guard workspace.hasDocument else {
+                    workspace.load(url)
+                    return
+                }
+                registry.enqueueDocument(url)
+                openWindow(id: "document")
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 registry.prepareForTermination()
@@ -51,10 +63,15 @@ private struct DocumentWindow: View {
     }
 }
 
+extension Notification.Name {
+    static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
+}
+
 struct AppCommands: Commands {
     @Environment(\.openWindow) private var openWindow
     @FocusedObject private var document: PDFWorkspace?
     @ObservedObject var registry: WorkspaceRegistry
+    @ObservedObject var preferences: AppPreferences
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
@@ -66,6 +83,20 @@ struct AppCommands: Commands {
             Button("Open PDF…") { document?.openDocument() }
                 .keyboardShortcut("o")
                 .disabled(document == nil)
+            Menu("Open Recent") {
+                let recents = preferences.recentDocumentURLs
+                ForEach(recents, id: \.self) { url in
+                    Button(url.deletingPathExtension().lastPathComponent) {
+                        NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+                    }
+                }
+                if !recents.isEmpty {
+                    Divider()
+                    Button("Clear Menu") { preferences.clearRecentDocuments() }
+                }
+            }
+            .disabled(preferences.recentDocumentURLs.isEmpty)
+            .id(preferences.recentDocumentsToken)
             Button("Import Images…") { document?.importImages() }
                 .disabled(document == nil)
         }
@@ -102,6 +133,8 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Export Protected Copy…") { document?.showPasswordExport = true }
                 .disabled(document?.hasDocument != true)
+            Button("Export Unprotected Copy…") { document?.removePasswordProtection() }
+                .disabled(document?.isPasswordProtected != true)
         }
         CommandGroup(replacing: .printItem) {
             Button("Print…") { document?.printDocument() }
