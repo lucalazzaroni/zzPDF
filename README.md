@@ -5,7 +5,7 @@ A private, offline, native PDF editor for macOS, built with SwiftUI and PDFKit.
 ![macOS 14+](https://img.shields.io/badge/macOS-14%2B-147EFB)
 ![Swift](https://img.shields.io/badge/Swift-5.10-F05138)
 
-zzPDF lets you read, organize, fill, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
+zzPDF lets you read, organize, fill, edit the text of, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
 
 The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.zip`](dist/zzPDF-macOS-arm64-v0.7.2.zip).
 
@@ -14,6 +14,7 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.
 - Continuous, single-page, two-page, and two-page continuous layouts.
 - Page fitting, actual size, thumbnails, search with `Command-F`, `Return`/`Shift-Return` result navigation, zoom, and navigation.
 - Native printing from File > Print or `Command-P`, with page fitting and automatic rotation.
+- An Edit Text tool that rewrites the text already on the page: click a line, or drag across a block, and type over it in place. The original font, size, color, and paper color are reused, and the replacement lands on the original baseline.
 - Visible annotation selection with a clear selection outline; corner handles remain usable immediately after drawing and scale freehand ink instead of clipping it.
 - A single text-markup tool with interactive drag-to-highlight, underline, and strike-through submodes and dedicated cursors.
 - A compact Shapes tool groups rectangles and ellipses, with accurate live stroke previews, optional fills, and editable stroke width and fill after insertion.
@@ -85,8 +86,21 @@ Tests/InkResizeSmoke/ standalone Ink path-resize regression check
 Tests/FormOverlaySmoke/ standalone interactive form-overlay regression check
 Tests/RecoverySmoke/    standalone temporary autosave and recovery regression check
 Tests/PrintSmoke/       standalone native print-operation regression check
+Tests/TextEditSmoke/    standalone page-text editing regression check
 ```
+
+## Editing Page Text
+
+The Edit Text tool (`Command-Shift-E`) replaces a run of existing page text rather than rewriting the original content stream. Selecting a line reads its font, size, and color, samples the paper color behind it, hides it under an opaque rectangle of that color, and puts an editable copy on the same baseline. The result is undoable, movable, resizable, and saved as a normal PDF annotation, and **Export Flattened** merges it into the page content.
+
+Consequences worth knowing:
+
+- Replacing a line with the same text is invisible: the new run lands on the original baseline, within a fraction of a point.
+- Replacements reuse the original typeface when the system has it, and fall back to the closest available font otherwise.
+- A longer replacement first widens into the page margin, then shrinks by up to 30%, and only then wraps onto extra lines.
+- Editing a block of lines reflows it inside the block, so the replacement uses the font's own line spacing rather than the document's.
+- Text over a photograph or a gradient gets a flat rectangle of the dominant color behind it, which will be visible.
 
 ## Project Status
 
-zzPDF is an early working release. Structural rewriting of arbitrary existing PDF content while perfectly retaining embedded fonts and layout will require an additional PDF engine in a future version.
+zzPDF is an early working release. Editing page text replaces runs of text on top of the page; rewriting the original content stream in place, with reflow across an entire document, will require an additional PDF engine in a future version.

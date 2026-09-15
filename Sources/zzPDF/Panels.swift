@@ -141,7 +141,10 @@ struct InspectorPanel: View {
                     newTextSizeControls
                 }
             }
-            if ![.select, .fillForms, .highlight, .redact].contains(workspace.activeTool) {
+            if workspace.activeTool == .editText, workspace.selectedAnnotationIsFreeText {
+                replacedTextControls
+            }
+            if ![.select, .fillForms, .editText, .highlight, .redact].contains(workspace.activeTool) {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -194,6 +197,7 @@ struct InspectorPanel: View {
         switch workspace.activeTool {
         case .select: "Select text and annotations. Double-click a note or added text to edit it."
         case .fillForms: "Fill text fields, select choices, and toggle checkboxes without annotation handles in the way."
+        case .editText: "Click a line of text to rewrite it in place, or drag across several lines to replace a whole block. The original font, size, color, and paper color are reused."
         case .highlight: "Drag across text to highlight it immediately. The tool stays active for the next passage."
         case .underline: "Drag across text to underline it immediately. The tool stays active for the next passage."
         case .strikeOut: "Drag across text to strike it out immediately. The tool stays active for the next passage."
@@ -221,9 +225,16 @@ struct InspectorPanel: View {
                         .controlSize(.small)
                 } else if workspace.selectedAnnotation?.isSubtype(.freeText) == true,
                           let annotation = workspace.selectedAnnotation {
-                    Button("Edit Text…") { workspace.beginEditingFreeText(annotation) }
-                        .controlSize(.small)
+                    Button("Edit Text…") {
+                        if workspace.selectedAnnotationIsTextReplacement {
+                            workspace.beginInlineTextEditing(annotation)
+                        } else {
+                            workspace.beginEditingFreeText(annotation)
+                        }
+                    }
+                    .controlSize(.small)
                     selectedTextSizeControls
+                    replacedTextControls
                 }
                 if workspace.selectedAnnotationIsShape {
                     selectedShapeControls
@@ -238,6 +249,61 @@ struct InspectorPanel: View {
                 if workspace.selectedAnnotation != nil {
                     InspectorIconButton(icon: "trash", help: "Remove Annotation") { workspace.removeSelectedAnnotation() }
                 }
+            }
+        }
+    }
+
+    private var replacedTextControls: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if workspace.selectedAnnotationIsFreeText {
+                if workspace.activeTool == .editText {
+                    Button("Edit Text…") {
+                        if let annotation = workspace.selectedAnnotation {
+                            workspace.beginInlineTextEditing(annotation)
+                        }
+                    }
+                    .controlSize(.small)
+                    selectedTextSizeControls
+                }
+                HStack {
+                    Text("Text Color").font(.callout)
+                    Spacer()
+                    ColorPicker(
+                        "",
+                        selection: Binding(
+                            get: { workspace.selectedTextColor },
+                            set: { workspace.setSelectedTextColor($0) }
+                        ),
+                        supportsOpacity: false
+                    )
+                    .labelsHidden()
+                }
+                HStack {
+                    Text("Background").font(.callout)
+                    Spacer()
+                    ColorPicker(
+                        "",
+                        selection: Binding(
+                            get: { workspace.selectedTextBackground },
+                            set: { workspace.setSelectedTextBackground($0) }
+                        ),
+                        supportsOpacity: false
+                    )
+                    .labelsHidden()
+                }
+                Picker(
+                    "Alignment",
+                    selection: Binding(
+                        get: { workspace.selectedTextAlignment },
+                        set: { workspace.setSelectedTextAlignment($0) }
+                    )
+                ) {
+                    Image(systemName: "text.alignleft").tag(NSTextAlignment.left)
+                    Image(systemName: "text.aligncenter").tag(NSTextAlignment.center)
+                    Image(systemName: "text.alignright").tag(NSTextAlignment.right)
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
             }
         }
     }

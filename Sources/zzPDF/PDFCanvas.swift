@@ -114,6 +114,10 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     private var annotationDidChange = false
     private var pageOverlays: [ObjectIdentifier: PDFPageFormOverlay] = [:]
     private var requestedEditor: (PDFAnnotation, PDFPage)?
+    private var requestedInlineEditor: (annotation: PDFAnnotation, page: PDFPage, singleLine: Bool)?
+    private var hoveredTextBounds: CGRect?
+    private var hoveredTextPoint: CGPoint?
+    private weak var hoveredTextPage: PDFPage?
     private lazy var drawingCursor: NSCursor = {
         let image = NSImage(size: NSSize(width: 24, height: 24), flipped: false) { rect in
             let shaft = NSBezierPath()
@@ -240,6 +244,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         guard let tool = workspace?.activeTool else { return .arrow }
         switch tool {
         case .select, .fillForms: return .arrow
+        case .editText: return .iBeam
         case .highlight: return highlighterCursor
         case .underline: return underlineCursor
         case .strikeOut: return strikeOutCursor
@@ -293,9 +298,39 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         }
     }
 
+    func beginInlineTextEditing(_ annotation: PDFAnnotation, on page: PDFPage, singleLine: Bool) {
+        let id = ObjectIdentifier(page)
+        if let overlay = pageOverlays[id] {
+            overlay.beginInlineEditing(annotation, singleLine: singleLine)
+        } else {
+            requestedInlineEditor = (annotation, page, singleLine)
+            layoutDocumentView()
+        }
+    }
+
     func cancelInlineTextEditing() {
         for overlay in pageOverlays.values { overlay.cancelCurrentEditor() }
         requestedEditor = nil
+        requestedInlineEditor = nil
+    }
+
+    func commitInlineTextEditing() {
+        requestedInlineEditor = nil
+        for overlay in pageOverlays.values { overlay.commitInlineEditing() }
+    }
+
+    func detachInlineTextEditing() {
+        requestedInlineEditor = nil
+        for overlay in pageOverlays.values { overlay.detachInlineEditing() }
+    }
+
+    var activeInlineEditor: PDFInlineTextEditor? {
+        pageOverlays.values.compactMap(\.inlineEditor).first
+    }
+
+    private func inlineEditorContains(_ viewPoint: CGPoint) -> Bool {
+        guard let editor = activeInlineEditor, let container = editor.superview else { return false }
+        return editor.frame.insetBy(dx: -4, dy: -4).contains(container.convert(viewPoint, from: self))
     }
 
     func pdfView(_ pdfView: PDFView, overlayViewFor page: PDFPage) -> NSView? {
@@ -310,6 +345,10 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         if let request = requestedEditor, request.1 === page {
             requestedEditor = nil
             overlay.beginEditing(request.0)
+        }
+        if let request = requestedInlineEditor, request.page === page {
+            requestedInlineEditor = nil
+            overlay.beginInlineEditing(request.annotation, singleLine: request.singleLine)
         }
     }
 
@@ -335,6 +374,26 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             return
         }
 
+        if workspace.activeTool == .editText {
+            guard let page = page(for: viewPoint, nearest: false) else { return }
+            let pagePoint = convert(viewPoint, to: page)
+            if let annotation = page.annotation(at: pagePoint), !annotation.isSubtype(.widget) {
+                if annotation.isSubtype(.freeText) {
+                    workspace.beginInlineTextEditing(annotation)
+                    return
+                }
+                if let text = workspace.textAnnotation(forCover: annotation) {
+                    workspace.beginInlineTextEditing(text)
+                    return
+                }
+            }
+            workspace.selectAnnotation(nil)
+            gesturePage = page
+            gesturePoints = [pagePoint]
+            interactionOverlay.needsDisplay = true
+            return
+        }
+
         if workspace.activeTool == .select {
             if let page = page(for: viewPoint, nearest: false) {
                 let pagePoint = convert(viewPoint, to: page)
@@ -348,7 +407,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
                     super.mouseDown(with: event)
                     return
                 }
-                if let annotation = page.annotation(at: pagePoint) {
+                if let hit = page.annotation(at: pagePoint) {
+                    let annotation = workspace.textAnnotation(forCover: hit) ?? hit
                     workspace.selectAnnotation(annotation)
                     if event.clickCount == 2 {
                         if annotation.isSubtype(.text) {
@@ -420,6 +480,22 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             super.mouseUp(with: event)
             return
         }
+        if workspace.activeTool == .editText {
+            let last = convert(convert(event.locationInWindow, from: nil), to: page)
+            let rect = CGRect(
+                x: min(first.x, last.x), y: min(first.y, last.y),
+                width: abs(last.x - first.x), height: abs(last.y - first.y)
+            )
+            gesturePoints.removeAll()
+            gesturePage = nil
+            interactionOverlay.needsDisplay = true
+            if rect.width < 5 || rect.height < 5 {
+                workspace.beginTextReplacement(at: first, on: page)
+            } else {
+                workspace.beginTextReplacement(in: rect, on: page)
+            }
+            return
+        }
         if workspace.activeTool == .draw || workspace.activeTool == .rectangle ||
             workspace.activeTool == .oval || workspace.activeTool == .redact {
             let viewPoint = convert(event.locationInWindow, from: nil)
@@ -464,6 +540,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     fileprivate func shouldCaptureInteraction(at viewPoint: CGPoint) -> Bool {
         guard let workspace else { return false }
+        if inlineEditorContains(viewPoint) { return false }
         if workspace.activeTool == .fillForms { return false }
         if workspace.activeTool != .select { return true }
         if let selected = workspace.selectedAnnotation, let page = selected.page,
@@ -538,6 +615,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         } else {
             annotation.bounds = newBounds
         }
+        workspace.synchronizeCover(for: annotation)
         annotationsChanged(on: page)
         needsDisplay = true
         annotationDidChange = true
@@ -569,6 +647,19 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             }
         }
 
+        if workspace.activeTool == .editText, gesturePage == nil,
+           let page = hoverPage, let point = hoverPoint,
+           let bounds = editableTextBounds(at: point, on: page) {
+            let rect = convert(bounds, from: page).standardized.insetBy(dx: -2, dy: -2)
+            let outline = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+            outline.lineWidth = 1.5
+            outline.setLineDash([4, 3], count: 2, phase: 0)
+            NSColor.controlAccentColor.withAlphaComponent(0.12).setFill()
+            outline.fill()
+            NSColor.controlAccentColor.withAlphaComponent(0.9).setStroke()
+            outline.stroke()
+        }
+
         if let page = gesturePage, gesturePoints.count > 1 {
             drawGesturePreview(on: page, workspace: workspace)
         }
@@ -598,6 +689,16 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
         let rect = CGRect(x: min(first.x, last.x), y: min(first.y, last.y),
                           width: abs(last.x - first.x), height: abs(last.y - first.y))
+        if workspace.activeTool == .editText {
+            let selection = NSBezierPath(roundedRect: rect, xRadius: 2, yRadius: 2)
+            selection.lineWidth = 1.5
+            selection.setLineDash([5, 3], count: 2, phase: 0)
+            NSColor.controlAccentColor.withAlphaComponent(0.14).setFill()
+            selection.fill()
+            NSColor.controlAccentColor.setStroke()
+            selection.stroke()
+            return
+        }
         let path = workspace.activeTool == .oval ? NSBezierPath(ovalIn: rect) : NSBezierPath(rect: rect)
         if workspace.activeTool == .redact {
             path.lineWidth = max(workspace.lineWidth * scaleFactor, 1.5)
@@ -614,6 +715,25 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             color.setStroke()
         }
         path.stroke()
+    }
+
+    private func editableTextBounds(at point: CGPoint, on page: PDFPage) -> CGRect? {
+        if let cached = hoveredTextBounds, hoveredTextPage === page,
+           cached.insetBy(dx: -2, dy: -2).contains(point) {
+            return cached
+        }
+        if let last = hoveredTextPoint, hoveredTextPage === page, hoveredTextBounds == nil,
+           hypot(last.x - point.x, last.y - point.y) < 5 {
+            return nil
+        }
+        hoveredTextPage = page
+        hoveredTextPoint = point
+        if let annotation = page.annotation(at: point), !annotation.isSubtype(.widget) {
+            hoveredTextBounds = annotation.bounds
+            return hoveredTextBounds
+        }
+        hoveredTextBounds = workspace?.replaceableTextBounds(at: point, on: page)
+        return hoveredTextBounds
     }
 
     private func drawSignaturePreview(at point: CGPoint, on page: PDFPage, workspace: PDFWorkspace) {

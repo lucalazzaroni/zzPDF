@@ -7,6 +7,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
 
     private var formViews: [NSView] = []
     private weak var freeTextEditor: PDFOverlayTextField?
+    private(set) weak var inlineEditor: PDFInlineTextEditor?
 
     init(owner: InteractivePDFView, page: PDFPage) {
         self.owner = owner
@@ -55,7 +56,57 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         focus(field)
     }
 
+    func beginInlineEditing(_ annotation: PDFAnnotation, singleLine: Bool) {
+        guard let owner else { return }
+        inlineEditor?.cancel()
+        let editor = PDFInlineTextEditor(frame: .zero)
+        editor.prepare(for: annotation, singleLine: singleLine, scale: owner.scaleFactor)
+        editor.onCommit = { [weak self] text in
+            self?.inlineEditor = nil
+            self?.owner?.workspace?.commitTextReplacement(annotation, text: text)
+            self?.owner?.refreshInteractionAppearance()
+        }
+        editor.onCancel = { [weak self] in
+            self?.inlineEditor = nil
+            self?.owner?.workspace?.cancelTextReplacement(annotation)
+        }
+        editor.onTextChange = { [weak self] text in
+            self?.owner?.workspace?.previewTextEdit(text)
+        }
+        editor.onLayoutChange = { [weak self] in
+            self?.updateInlineEditorFrame()
+        }
+        inlineEditor = editor
+        addSubview(editor)
+        updateInlineEditorFrame()
+        DispatchQueue.main.async { [weak editor] in editor?.focus() }
+    }
+
+    func commitInlineEditing() {
+        inlineEditor?.commit()
+        inlineEditor = nil
+    }
+
+    func cancelInlineEditing() {
+        inlineEditor?.cancel()
+        inlineEditor = nil
+    }
+
+    func detachInlineEditing() {
+        inlineEditor?.detach()
+        inlineEditor = nil
+    }
+
+    private func updateInlineEditorFrame() {
+        guard let editor = inlineEditor, let annotation = editor.annotation,
+              let owner, let page else { return }
+        let pdfViewRect = owner.convert(annotation.bounds, from: page).standardized
+        editor.updateLayout(frame: convert(pdfViewRect, from: owner).standardized, scale: owner.scaleFactor)
+    }
+
     func cancelCurrentEditor() {
+        inlineEditor?.cancel()
+        inlineEditor = nil
         guard let field = freeTextEditor, let annotation = field.annotation else { return }
         owner?.workspace?.cancelEditableText(annotation)
         field.removeFromSuperview()
@@ -216,6 +267,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         if let field = freeTextEditor, let annotation = field.annotation {
             updateFrame(of: field, for: annotation)
         }
+        updateInlineEditorFrame()
     }
 
     private func synchronizeValues() {
