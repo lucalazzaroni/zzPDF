@@ -41,6 +41,10 @@ struct ContentView: View {
             SignatureSheet(strokes: $workspace.savedSignature)
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.showPageStamp) {
+            PageStampSheet()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.showPasswordExport) {
             PasswordExportSheet()
                 .environmentObject(workspace)

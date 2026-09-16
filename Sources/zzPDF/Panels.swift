@@ -315,6 +315,11 @@ struct InspectorPanel: View {
     @EnvironmentObject private var preferences: AppPreferences
 
     static let fontFamilies = NSFontManager.shared.availableFontFamilies
+    static let stampFonts = [
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique",
+        "Times-Roman", "Times-Bold", "Times-Italic",
+        "Courier", "Courier-Bold"
+    ]
 
     var body: some View {
         ScrollView {
@@ -700,6 +705,12 @@ struct InspectorPanel: View {
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
             Button { workspace.exportPagesAsImages() } label: { Label("Export Pages as Images…", systemImage: "photo") }
             Button { workspace.exportSmallerCopy() } label: { Label("Export Smaller Copy…", systemImage: "arrow.down.circle") }
+            Button { workspace.beginPageStamp(PageStamper.Options()) } label: {
+                Label("Page Numbers & Headers…", systemImage: "number")
+            }
+            Button { workspace.beginPageStamp(.watermark) } label: {
+                Label("Watermark…", systemImage: "drop")
+            }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
                 Button { workspace.removePasswordProtection() } label: {
@@ -944,4 +955,134 @@ struct PageDragItem: Codable, Transferable {
 
 extension UTType {
     static let zzPDFPageReference = UTType(exportedAs: "it.lucalazzaroni.zzpdf.page-reference")
+}
+
+struct PageStampSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var preview: NSImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(workspace.stampOptions.placement == .center ? "Watermark" : "Header, Footer or Page Number")
+                    .font(.title2.bold())
+                Text("The text becomes part of the page, so it survives every export and stays searchable.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(alignment: .top, spacing: 18) {
+                Form {
+                    TextField("Text", text: $workspace.stampOptions.text, axis: .vertical)
+                        .lineLimit(1...3)
+                    Text(PageStamper.tokenHelp)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Position", selection: $workspace.stampOptions.placement) {
+                        ForEach(PageStamper.Placement.allCases) { placement in
+                            Text(placement.label).tag(placement)
+                        }
+                    }
+                    Picker("Font", selection: $workspace.stampOptions.fontName) {
+                        ForEach(InspectorPanel.stampFonts, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    LabeledContent("Size") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.fontSize, in: 6...144)
+                            Text("\(Int(workspace.stampOptions.fontSize)) pt").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Colour") {
+                        ColorPicker("", selection: Binding(
+                            get: { Color(nsColor: workspace.stampOptions.color) },
+                            set: { workspace.stampOptions.color = NSColor($0) }
+                        ), supportsOpacity: false)
+                        .labelsHidden()
+                    }
+                    LabeledContent("Opacity") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.opacity, in: 0.05...1)
+                            Text("\(Int(workspace.stampOptions.opacity * 100))%").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Rotation") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.rotation, in: -90...90, step: 1)
+                            Text("\(Int(workspace.stampOptions.rotation))°").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Margin") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.margin, in: 0...120)
+                            Text("\(Int(workspace.stampOptions.margin)) pt").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    if workspace.stampOptions.text.contains("{bates}") {
+                        TextField("Bates prefix", text: $workspace.stampOptions.batesPrefix)
+                        Stepper("Start at \(workspace.stampOptions.batesStart)", value: $workspace.stampOptions.batesStart, in: 0...9_999_999)
+                        Stepper("\(workspace.stampOptions.batesDigits) digits", value: $workspace.stampOptions.batesDigits, in: 1...12)
+                    }
+                    if workspace.selectedPageIndexes.count > 1 {
+                        Toggle("Only the \(workspace.selectedPageIndexes.count) selected pages", isOn: $workspace.stampAppliesToSelectionOnly)
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(width: 360)
+
+                VStack(spacing: 6) {
+                    Group {
+                        if let preview {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            RoundedRectangle(cornerRadius: 4).fill(.quaternary)
+                        }
+                    }
+                    .frame(width: 190, height: 250)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4).stroke(.quaternary)
+                    }
+                    Text("Preview of page \((workspace.stampTargetIndexes.first ?? 0) + 1)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add to \(workspace.stampTargetIndexes.count) Page\(workspace.stampTargetIndexes.count == 1 ? "" : "s")") {
+                    workspace.applyPageStamp()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(workspace.stampOptions.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+        .task(id: previewKey) { refreshPreview() }
+    }
+
+    /// Everything the preview depends on, so it is redrawn when any of it changes.
+    private var previewKey: String {
+        let options = workspace.stampOptions
+        return [
+            options.text, options.placement.rawValue, options.fontName,
+            "\(options.fontSize)", "\(options.opacity)", "\(options.rotation)",
+            "\(options.margin)", options.color.description, options.batesPrefix,
+            "\(options.batesStart)", "\(options.batesDigits)", "\(workspace.stampAppliesToSelectionOnly)"
+        ].joined(separator: "|")
+    }
+
+    private func refreshPreview() {
+        preview = workspace.stampPreview(size: CGSize(width: 380, height: 500))
+    }
 }

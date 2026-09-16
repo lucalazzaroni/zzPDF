@@ -135,6 +135,11 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Export Unprotected Copy…") { document?.removePasswordProtection() }
                 .disabled(document?.isPasswordProtected != true)
+            Button("Page Numbers & Headers…") { document?.beginPageStamp(PageStamper.Options()) }
+                .disabled(document?.hasDocument != true)
+            Button("Watermark…") { document?.beginPageStamp(.watermark) }
+                .disabled(document?.hasDocument != true)
+            Divider()
             Button("Export Pages as Images…") { document?.exportPagesAsImages() }
                 .disabled(document?.hasDocument != true)
             Button("Export Smaller Copy…") { document?.exportSmallerCopy() }

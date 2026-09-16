@@ -159,6 +159,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var inspectorVisible = true { didSet { preferences.inspectorVisible = inspectorVisible } }
     @Published var showSignaturePad = false
     @Published var showPasswordExport = false
+    @Published var showPageStamp = false
+    @Published var stampOptions = PageStamper.Options()
+    @Published var stampAppliesToSelectionOnly = false
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
     @Published var showFreeTextEditor = false
@@ -2254,6 +2257,79 @@ final class PDFWorkspace: ObservableObject {
             zoom: zoom ?? Double(pdfView?.scaleFactor ?? 0),
             layout: pageLayout
         )
+    }
+
+    // MARK: - Stamping pages
+
+    func beginPageStamp(_ options: PageStamper.Options) {
+        stampOptions = options
+        stampAppliesToSelectionOnly = selectedPageIndexes.count > 1
+        showPageStamp = true
+    }
+
+    var stampTargetIndexes: [Int] {
+        stampAppliesToSelectionOnly ? targetPageIndexes : Array(0..<pageCount)
+    }
+
+    /// A preview of what the stamp will look like on the first page it touches.
+    func stampPreview(size: CGSize) -> NSImage? {
+        guard let document = pdfDocument,
+              let index = stampTargetIndexes.first,
+              let page = document.page(at: index),
+              let stamped = stampedPage(page, at: index, sequence: 0, in: document) else { return nil }
+        let preview = PDFDocument()
+        preview.insert(stamped, at: 0)
+        return preview.page(at: 0)?.thumbnail(of: size, for: .cropBox)
+    }
+
+    private func stampedPage(_ page: PDFPage, at index: Int, sequence: Int, in document: PDFDocument) -> PDFPage? {
+        let text = PageStamper.expand(
+            stampOptions.text,
+            pageIndex: index,
+            pageCount: document.pageCount,
+            documentName: displayName,
+            sequence: sequence,
+            options: stampOptions
+        )
+        return PageStamper.stamped(page, text: text, options: stampOptions)
+    }
+
+    /// Draws the stamp into each target page. The pages are rebuilt rather than annotated,
+    /// so the result is part of the document straight away and survives any export.
+    func applyPageStamp() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        let indexes = stampTargetIndexes
+        guard !indexes.isEmpty else { return }
+
+        var replacements: [(index: Int, original: PDFPage, stamped: PDFPage)] = []
+        for (sequence, index) in indexes.enumerated() {
+            guard let page = document.page(at: index),
+                  let stamped = stampedPage(page, at: index, sequence: sequence, in: document) else { continue }
+            replacements.append((index, page, stamped))
+        }
+        guard !replacements.isEmpty else {
+            presentError("The pages could not be stamped.")
+            return
+        }
+
+        let wasDirty = isDirty
+        let apply: ([(index: Int, original: PDFPage, stamped: PDFPage)], Bool) -> Void = { items, stamped in
+            for item in items {
+                guard item.index < document.pageCount else { continue }
+                document.removePage(at: item.index)
+                document.insert(stamped ? item.stamped : item.original, at: item.index)
+            }
+        }
+        apply(replacements, true)
+        let recorded = replacements
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { apply(recorded, false) },
+            redo: { apply(recorded, true) }
+        )
+        showPageStamp = false
+        changed(replacements.count == 1 ? "1 page stamped" : "\(replacements.count) pages stamped")
     }
 
     /// Runs OCR over every page that has no text and rebuilds those pages with an
