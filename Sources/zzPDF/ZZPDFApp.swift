@@ -157,6 +157,8 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Split Document…") { document?.beginSplit() }
                 .disabled(document?.hasDocument != true)
+            Button("Compare with Another PDF…") { document?.compareWithAnotherPDF() }
+                .disabled(document?.hasDocument != true)
             Divider()
             Button("Rotate Left") { document?.rotateSelectedPages(by: -90) }
                 .keyboardShortcut("l", modifiers: [.command, .option])

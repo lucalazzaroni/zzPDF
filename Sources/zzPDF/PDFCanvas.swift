@@ -354,6 +354,23 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         for overlay in pageOverlays.values { overlay.commitInlineEditing() }
     }
 
+    /// Moves form focus onto the next or previous page that has fields, scrolling to it.
+    func focusFirstFormField(onPageAfter page: PDFPage?, direction: Int) -> Bool {
+        guard let document, let page, direction != 0 else { return false }
+        var index = document.index(for: page)
+        guard index != NSNotFound else { return false }
+        while true {
+            index += direction > 0 ? 1 : -1
+            guard index >= 0, index < document.pageCount, let next = document.page(at: index) else { return false }
+            guard next.annotations.contains(where: { $0.isSubtype(.widget) }) else { continue }
+            go(to: next)
+            layoutDocumentView()
+            guard let overlay = pageOverlays[ObjectIdentifier(next)] else { return false }
+            overlay.refresh()
+            return overlay.focusEdgeField(last: direction < 0)
+        }
+    }
+
     func detachInlineTextEditing() {
         requestedInlineEditor = nil
         for overlay in pageOverlays.values { overlay.detachInlineEditing() }

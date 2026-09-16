@@ -497,6 +497,39 @@ struct InspectorPanel: View {
         }
     }
 
+    private var signatureSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(
+                workspace.digitalSignatures.count == 1
+                    ? "Digitally signed"
+                    : "\(workspace.digitalSignatures.count) digital signatures",
+                systemImage: "seal"
+            )
+            .font(.callout.weight(.medium))
+            ForEach(workspace.digitalSignatures) { signature in
+                VStack(alignment: .leading, spacing: 1) {
+                    if let signer = signature.signer {
+                        Text(signer).font(.caption)
+                    }
+                    Text(signature.schemeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let date = signature.signedAt {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 4)
+            }
+            Text("zzPDF does not check signatures. Use a validator to confirm one.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, 2)
+    }
+
     private var replacedTextControls: some View {
         VStack(alignment: .leading, spacing: 10) {
             if workspace.selectedAnnotationIsFreeText {
@@ -705,6 +738,9 @@ struct InspectorPanel: View {
         VStack(alignment: .leading, spacing: 9) {
             Text("DOCUMENT")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if !workspace.digitalSignatures.isEmpty {
+                signatureSummary
+            }
             Button { workspace.mergePDF() } label: { Label("Merge PDF…", systemImage: "square.stack.3d.up") }
             Button { workspace.importImages() } label: { Label("Add Images…", systemImage: "photo.on.rectangle.angled") }
             Button { workspace.recognizeCurrentPage() } label: { Label("Read Text on This Page…", systemImage: "text.viewfinder") }
@@ -722,6 +758,13 @@ struct InspectorPanel: View {
                 Label("Watermark…", systemImage: "drop")
             }
             Button { workspace.beginSplit() } label: { Label("Split Document…", systemImage: "square.split.1x2") }
+            Button { workspace.compareWithAnotherPDF() } label: {
+                Label("Compare with Another PDF…", systemImage: "arrow.left.arrow.right")
+            }
+            if workspace.hasFormFields {
+                Button { workspace.exportFormData() } label: { Label("Export Form Data…", systemImage: "tray.and.arrow.up") }
+                Button { workspace.importFormData() } label: { Label("Fill from Form Data…", systemImage: "tray.and.arrow.down") }
+            }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
                 Button { workspace.removePasswordProtection() } label: {
@@ -1141,5 +1184,74 @@ struct SplitSheet: View {
         }
         .padding(20)
         .frame(width: 430)
+    }
+}
+
+struct ComparisonSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Compared with \(workspace.comparedName)").font(.title2.bold())
+                if workspace.isComparing {
+                    Text("Comparing…").foregroundStyle(.secondary)
+                } else {
+                    Text(workspace.comparisonChangeCount == 0
+                         ? "The two documents match."
+                         : "\(workspace.comparisonChangeCount) of \(workspace.comparison.count) pages differ. Changes are marked in red.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(alignment: .top, spacing: 16) {
+                List(workspace.comparison, selection: $selected) { result in
+                    HStack(spacing: 7) {
+                        Image(systemName: result.change.symbol)
+                            .foregroundStyle(result.change.isChange ? Color.red : Color.secondary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Page \(result.pageNumber)")
+                            Text(result.change.label)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .tag(result.pageNumber)
+                }
+                .frame(width: 210, height: 380)
+
+                VStack(spacing: 6) {
+                    Group {
+                        if let page = selected ?? workspace.comparison.first(where: { $0.change.isChange })?.pageNumber,
+                           let image = workspace.comparisonImage(forPageNumber: page) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            RoundedRectangle(cornerRadius: 4).fill(.quaternary)
+                        }
+                    }
+                    .frame(width: 320, height: 380)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay { RoundedRectangle(cornerRadius: 4).stroke(.quaternary) }
+                    Text("Red marks what the other version changed.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
     }
 }

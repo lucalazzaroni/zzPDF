@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
@@ -161,6 +162,11 @@ final class PDFWorkspace: ObservableObject {
     @Published var showPasswordExport = false
     @Published var showPageStamp = false
     @Published var showSplit = false
+    @Published var showComparison = false
+    @Published private(set) var comparison: [DocumentComparer.PageResult] = []
+    @Published private(set) var comparedDocument: PDFDocument?
+    @Published private(set) var comparedName = ""
+    @Published private(set) var isComparing = false
     @Published var splitEveryPages = 1
     @Published var splitAtContents = false
     @Published var stampOptions = PageStamper.Options()
@@ -191,6 +197,7 @@ final class PDFWorkspace: ObservableObject {
     }
     /// True when the document on disk asked for a password to open.
     @Published private(set) var isPasswordProtected = false
+    @Published private(set) var digitalSignatures: [DigitalSignatureScanner.Signature] = []
 
     let preferences: AppPreferences
     private let recoveryStore: TemporaryRecoveryStore
@@ -291,6 +298,7 @@ final class PDFWorkspace: ObservableObject {
         pdfDocument = document
         fileURL = url
         isPasswordProtected = wasLocked
+        digitalSignatures = (try? Data(contentsOf: url)).map(DigitalSignatureScanner.signatures(in:)) ?? []
         preferences.noteRecentDocument(url)
         currentPageIndex = 0
         activeTool = preferences.initialTool
@@ -798,6 +806,47 @@ final class PDFWorkspace: ObservableObject {
         } else {
             statusMessage = "Copy saved: \(formatter.string(fromByteCount: Int64(newSize)))"
         }
+    }
+
+    // MARK: - Comparing
+
+    var comparisonChangeCount: Int { comparison.filter(\.change.isChange).count }
+
+    func compareWithAnotherPDF() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the other version of this document"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let other = PDFDocument(url: url), !other.isLocked else {
+            presentError("That PDF could not be opened for comparison.")
+            return
+        }
+        comparedDocument = other
+        comparedName = url.deletingPathExtension().lastPathComponent
+        comparison = []
+        isComparing = true
+        showComparison = true
+        statusMessage = "Comparing with \(comparedName)…"
+
+        Task { @MainActor in
+            let results = DocumentComparer.compare(document, with: other)
+            comparison = results
+            isComparing = false
+            let changed = results.filter(\.change.isChange).count
+            statusMessage = changed == 0
+                ? "The two documents match"
+                : "\(changed) page\(changed == 1 ? "" : "s") differ"
+        }
+    }
+
+    func comparisonImage(forPageNumber number: Int) -> NSImage? {
+        let index = number - 1
+        let original = (index < pageCount) ? pdfDocument?.page(at: index) : nil
+        let revised = (index < (comparedDocument?.pageCount ?? 0)) ? comparedDocument?.page(at: index) : nil
+        return DocumentComparer.differenceImage(original, revised)
     }
 
     // MARK: - Splitting
@@ -1525,6 +1574,117 @@ final class PDFWorkspace: ObservableObject {
         } else if annotation != nil {
             statusMessage = "Text editing cancelled"
         }
+    }
+
+    // MARK: - Form data
+
+    /// Every named form field in the document and what it currently holds.
+    func formFieldValues() -> [String: String] {
+        guard let document = pdfDocument else { return [:] }
+        var values: [String: String] = [:]
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where annotation.isSubtype(.widget) {
+                guard let name = annotation.fieldName, !name.isEmpty else { continue }
+                switch annotation.widgetFieldType {
+                case .button:
+                    if annotation.buttonWidgetState == .onState {
+                        values[name] = annotation.buttonWidgetStateString ?? "On"
+                    } else if values[name] == nil {
+                        values[name] = "Off"
+                    }
+                default:
+                    values[name] = annotation.widgetStringValue ?? ""
+                }
+            }
+        }
+        return values
+    }
+
+    var hasFormFields: Bool { !formFieldValues().isEmpty }
+
+    func exportFormData() {
+        finishActiveTextEditing()
+        let values = formFieldValues()
+        guard !values.isEmpty else {
+            statusMessage = "This document has no form fields"
+            return
+        }
+        guard let url = chooseSaveURL(defaultName: "\(displayName)-form.json", type: .json) else { return }
+        guard writeFormData(to: url) else {
+            presentError("The form data could not be written.")
+            return
+        }
+        statusMessage = "\(values.count) field\(values.count == 1 ? "" : "s") exported"
+    }
+
+    @discardableResult
+    func writeFormData(to url: URL) -> Bool {
+        let values = formFieldValues()
+        guard !values.isEmpty,
+              let data = try? JSONEncoder.sortedPretty.encode(values) else { return false }
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+
+    func importFormData() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the form data to fill in"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let filled = applyFormData(from: url)
+        guard filled > 0 else {
+            presentError("No field in this document matched that file.")
+            return
+        }
+        statusMessage = "\(filled) field\(filled == 1 ? "" : "s") filled in"
+    }
+
+    /// Fills in every field whose name appears in the file, as one undo step.
+    @discardableResult
+    func applyFormData(from url: URL) -> Int {
+        guard let document = pdfDocument,
+              let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([String: String].self, from: data),
+              !values.isEmpty else { return 0 }
+
+        var changes: [(annotation: PDFAnnotation, old: String, new: String, isButton: Bool)] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where annotation.isSubtype(.widget) {
+                guard let name = annotation.fieldName, let value = values[name] else { continue }
+                if annotation.widgetFieldType == .button {
+                    let onName = annotation.buttonWidgetStateString ?? "On"
+                    let shouldBeOn = value == onName || value.caseInsensitiveCompare("on") == .orderedSame
+                    let old = annotation.buttonWidgetState == .onState ? onName : "Off"
+                    let new = shouldBeOn ? onName : "Off"
+                    guard old != new else { continue }
+                    changes.append((annotation, old, new, true))
+                } else {
+                    let old = annotation.widgetStringValue ?? ""
+                    guard old != value else { continue }
+                    changes.append((annotation, old, value, false))
+                }
+            }
+        }
+        guard !changes.isEmpty else { return 0 }
+
+        let wasDirty = isDirty
+        let apply: (Bool) -> Void = { forward in
+            for change in changes {
+                let value = forward ? change.new : change.old
+                if change.isButton {
+                    let onName = change.annotation.buttonWidgetStateString ?? "On"
+                    change.annotation.buttonWidgetState = value == onName ? .onState : .offState
+                } else {
+                    change.annotation.widgetStringValue = value
+                }
+            }
+        }
+        apply(true)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { apply(false) }, redo: { apply(true) })
+        changed("Form filled in")
+        return changes.count
     }
 
     func updateButtonField(_ annotation: PDFAnnotation, to state: PDFWidgetCellState) {
@@ -2711,9 +2871,9 @@ final class PDFWorkspace: ObservableObject {
         return true
     }
 
-    private func chooseSaveURL(defaultName: String) -> URL? {
+    private func chooseSaveURL(defaultName: String, type: UTType = .pdf) -> URL? {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
+        panel.allowedContentTypes = [type]
         panel.nameFieldStringValue = defaultName
         if !preferences.exportFolderPath.isEmpty {
             let folder = URL(fileURLWithPath: preferences.exportFolderPath)
@@ -2863,5 +3023,14 @@ extension NSColor {
         let isNeutral = base.saturationComponent < 0.15 && base.brightnessComponent < 0.35
         let tint = isNeutral ? NSColor.systemYellow : base
         return tint.withAlphaComponent(max(0.05, min(alpha, 1)))
+    }
+}
+
+extension JSONEncoder {
+    /// Stable, readable output, so exported form data diffs cleanly.
+    static var sortedPretty: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
     }
 }

@@ -45,6 +45,10 @@ struct ContentView: View {
             PageStampSheet()
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.showComparison) {
+            ComparisonSheet()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.showSplit) {
             SplitSheet()
                 .environmentObject(workspace)
