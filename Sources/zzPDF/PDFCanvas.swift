@@ -294,7 +294,14 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         return cursorForActiveTool
     }
 
+    func applyReadingMode(_ mode: ReadingMode) {
+        wantsLayer = true
+        layer?.filters = mode.filters
+        backgroundColor = mode.backgroundColor
+    }
+
     func refreshInteractionAppearance() {
+        if let mode = workspace?.preferences.readingMode { applyReadingMode(mode) }
         window?.acceptsMouseMovedEvents = true
         window?.invalidateCursorRects(for: self)
         for overlay in pageOverlays.values { overlay.refresh() }

@@ -155,6 +155,8 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Extract Selected Pages…") { document?.extractSelectedPages() }
                 .disabled(document?.hasDocument != true)
+            Button("Split Document…") { document?.beginSplit() }
+                .disabled(document?.hasDocument != true)
             Divider()
             Button("Rotate Left") { document?.rotateSelectedPages(by: -90) }
                 .keyboardShortcut("l", modifiers: [.command, .option])
@@ -206,6 +208,11 @@ struct AppCommands: Commands {
                 document?.inspectorVisible.toggle()
             }
             .disabled(document == nil)
+            Divider()
+            ForEach(ReadingMode.allCases) { mode in
+                Button(mode.label) { document?.setReadingMode(mode) }
+                    .disabled(document == nil)
+            }
             Divider()
             Button("Fit Page") { document?.fitPage() }
                 .keyboardShortcut("0", modifiers: [.command])

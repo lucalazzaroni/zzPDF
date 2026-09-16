@@ -45,6 +45,10 @@ struct ContentView: View {
             PageStampSheet()
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.showSplit) {
+            SplitSheet()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.showPasswordExport) {
             PasswordExportSheet()
                 .environmentObject(workspace)
@@ -199,6 +203,23 @@ struct WelcomeView: View {
                     Button("Create from Images…") { workspace.importImages() }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+                }
+                if !workspace.preferences.recentDocumentURLs.isEmpty {
+                    VStack(spacing: 6) {
+                        Text("RECENT")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(workspace.preferences.recentDocumentURLs.prefix(5), id: \.self) { url in
+                            Button {
+                                NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+                            } label: {
+                                Label(url.deletingPathExtension().lastPathComponent, systemImage: "doc")
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.link)
+                        }
+                    }
+                    .padding(.top, 4)
                 }
                 HStack(spacing: 26) {
                     WelcomeFeature(icon: "highlighter", text: "Annotate")

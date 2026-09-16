@@ -160,6 +160,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var showSignaturePad = false
     @Published var showPasswordExport = false
     @Published var showPageStamp = false
+    @Published var showSplit = false
+    @Published var splitEveryPages = 1
+    @Published var splitAtContents = false
     @Published var stampOptions = PageStamper.Options()
     @Published var stampAppliesToSelectionOnly = false
     @Published var showOCRResult = false
@@ -795,6 +798,83 @@ final class PDFWorkspace: ObservableObject {
         } else {
             statusMessage = "Copy saved: \(formatter.string(fromByteCount: Int64(newSize)))"
         }
+    }
+
+    // MARK: - Splitting
+
+    /// Where the document would be cut: every N pages, or at each top-level entry of its
+    /// own table of contents.
+    var splitStartIndexes: [Int] {
+        guard pageCount > 0 else { return [] }
+        if splitAtContents {
+            let starts = outlineStartIndexes()
+            if !starts.isEmpty { return starts }
+        }
+        let step = max(1, splitEveryPages)
+        return Array(stride(from: 0, to: pageCount, by: step))
+    }
+
+    private func outlineStartIndexes() -> [Int] {
+        guard let root = outlineRoot, let document = pdfDocument else { return [] }
+        var indexes: Set<Int> = [0]
+        for position in 0..<root.numberOfChildren {
+            guard let child = root.child(at: position) else { continue }
+            let page = child.destination?.page ?? (child.action as? PDFActionGoTo)?.destination.page
+            guard let page else { continue }
+            let index = document.index(for: page)
+            if index != NSNotFound { indexes.insert(index) }
+        }
+        return indexes.sorted()
+    }
+
+    var splitPartCount: Int { splitStartIndexes.count }
+
+    func beginSplit() {
+        splitEveryPages = max(1, min(splitEveryPages, max(1, pageCount)))
+        splitAtContents = outlineRoot != nil && splitAtContents
+        showSplit = true
+    }
+
+    func splitDocument() {
+        guard pdfDocument != nil else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Split"
+        panel.message = "Choose where to save the parts"
+        if !preferences.exportFolderPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: preferences.exportFolderPath)
+        }
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let written = writeSplitParts(into: folder)
+        showSplit = false
+        guard written > 0 else {
+            presentError("The document could not be split.")
+            return
+        }
+        statusMessage = "Split into \(written) file\(written == 1 ? "" : "s")"
+    }
+
+    @discardableResult
+    func writeSplitParts(into folder: URL) -> Int {
+        guard let document = pdfDocument else { return 0 }
+        let starts = splitStartIndexes
+        guard !starts.isEmpty else { return 0 }
+        var written = 0
+        for (position, start) in starts.enumerated() {
+            let end = position + 1 < starts.count ? starts[position + 1] : document.pageCount
+            guard start < end else { continue }
+            let part = PDFDocument()
+            for index in start..<end {
+                guard let page = document.page(at: index)?.copy() as? PDFPage else { continue }
+                part.insert(page, at: part.pageCount)
+            }
+            guard part.pageCount > 0 else { continue }
+            let name = String(format: "%@-%02d.pdf", displayName, position + 1)
+            if part.write(to: folder.appendingPathComponent(name)) { written += 1 }
+        }
+        return written
     }
 
     func extractSelectedPages() {
@@ -2230,6 +2310,12 @@ final class PDFWorkspace: ObservableObject {
 
     func refreshPreferenceAppearance() {
         pdfView?.refreshInteractionAppearance()
+    }
+
+    func setReadingMode(_ mode: ReadingMode) {
+        preferences.readingMode = mode
+        pdfView?.applyReadingMode(mode)
+        statusMessage = "\(mode.label) reading mode"
     }
 
     func applyDefaultPreferences() {

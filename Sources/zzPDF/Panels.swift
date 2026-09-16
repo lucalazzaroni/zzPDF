@@ -688,6 +688,16 @@ struct InspectorPanel: View {
                 Button("Reset") { workspace.resetCurrentCrop() }
             }
             .controlSize(.small)
+            Picker("", selection: Binding(
+                get: { preferences.readingMode },
+                set: { workspace.setReadingMode($0) }
+            )) {
+                ForEach(ReadingMode.allCases) { mode in
+                    Image(systemName: mode.symbol).help(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
         }
     }
 
@@ -711,6 +721,7 @@ struct InspectorPanel: View {
             Button { workspace.beginPageStamp(.watermark) } label: {
                 Label("Watermark…", systemImage: "drop")
             }
+            Button { workspace.beginSplit() } label: { Label("Split Document…", systemImage: "square.split.1x2") }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
                 Button { workspace.removePasswordProtection() } label: {
@@ -1084,5 +1095,51 @@ struct PageStampSheet: View {
 
     private func refreshPreview() {
         preview = workspace.stampPreview(size: CGSize(width: 380, height: 500))
+    }
+}
+
+struct SplitSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Split Document").font(.title2.bold())
+                Text("The original file is left alone; each part is written as its own PDF.")
+                    .foregroundStyle(.secondary)
+            }
+            Form {
+                if workspace.outlineRoot != nil {
+                    Picker("Split", selection: $workspace.splitAtContents) {
+                        Text("Every few pages").tag(false)
+                        Text("At each contents entry").tag(true)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+                if !workspace.splitAtContents {
+                    Stepper(
+                        "Every \(workspace.splitEveryPages) page\(workspace.splitEveryPages == 1 ? "" : "s")",
+                        value: $workspace.splitEveryPages,
+                        in: 1...max(1, workspace.pageCount)
+                    )
+                }
+                LabeledContent("Result") {
+                    Text("\(workspace.splitPartCount) file\(workspace.splitPartCount == 1 ? "" : "s") from \(workspace.pageCount) pages")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Choose Folder…") { workspace.splitDocument() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(workspace.splitPartCount < 2)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
     }
 }

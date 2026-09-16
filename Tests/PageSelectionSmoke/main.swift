@@ -118,6 +118,31 @@ struct PageSelectionSmoke {
             "The annotation list reports the wrong page"
         )
 
+        // Splitting writes one file per part, covering every page exactly once.
+        workspace.splitEveryPages = 2
+        workspace.splitAtContents = false
+        check(workspace.splitStartIndexes == [0, 2, 4], "The cuts fall at \(workspace.splitStartIndexes)")
+        let splitFolder = directory.appendingPathComponent("split", isDirectory: true)
+        try! FileManager.default.createDirectory(at: splitFolder, withIntermediateDirectories: true)
+        check(workspace.writeSplitParts(into: splitFolder) == 3, "Splitting did not write three files")
+        let parts = ((try? FileManager.default.contentsOfDirectory(atPath: splitFolder.path)) ?? []).sorted()
+        check(parts.count == 3, "The split folder holds \(parts)")
+        var recovered: [String] = []
+        for part in parts {
+            guard let document = PDFDocument(url: splitFolder.appendingPathComponent(part)) else {
+                fail("A split part could not be opened")
+            }
+            check(document.pageCount == 2, "\(part) holds \(document.pageCount) pages instead of 2")
+            for index in 0..<document.pageCount {
+                recovered.append((document.page(at: index)?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        check(recovered == labels(workspace), "The parts hold \(recovered) instead of \(labels(workspace))")
+
+        // An odd remainder still gets its own part rather than being dropped.
+        workspace.splitEveryPages = 4
+        check(workspace.splitStartIndexes == [0, 4], "A remainder changed the cuts to \(workspace.splitStartIndexes)")
+
         print("Page selection and annotation list smoke test passed.")
     }
 
