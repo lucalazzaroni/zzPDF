@@ -328,6 +328,49 @@ struct TextEditSmoke {
             )
         }
 
+        // Escape discards the edit and leaves the tool where it was; a second Escape is
+        // what returns to Select. The key is sent for real, because which of the editor and
+        // the menu sees it first is exactly what this has to survive.
+        clickView.scaleFactor = 1
+        clickView.layoutDocumentView()
+        window.makeKeyAndOrderFront(nil)
+
+        clickWorkspace.beginTextReplacement(at: pagePoint, on: clickPage)
+        guard let discarded = clickWorkspace.selectedAnnotation else { fail("No replacement was started") }
+        clickWorkspace.previewTextEdit("TESTO CHE NON DEVE RESTARE")
+        check(discarded.contents == "TESTO CHE NON DEVE RESTARE", "Typing did not reach the annotation")
+        if clickView.activeInlineEditor != nil {
+            clickView.activeInlineEditor?.focus()
+            sendEscape(to: window)
+        } else {
+            clickWorkspace.activateSelectTool()
+        }
+        check(
+            clickPage.annotations.isEmpty,
+            "Escape left \(clickPage.annotations.count) annotations from a discarded edit"
+        )
+        check(!clickWorkspace.isDirty, "Escape left the document marked as edited")
+        check(clickWorkspace.activeTool == .editText, "The first Escape already left the Edit Text tool")
+
+        clickWorkspace.activateSelectTool()
+        check(clickWorkspace.activeTool == .select, "The second Escape did not return to Select")
+
+        // Escape on a line that was already replaced puts back what was committed, rather
+        // than removing the replacement or keeping what was just typed.
+        clickWorkspace.activateTool(.editText)
+        clickWorkspace.beginTextReplacement(at: pagePoint, on: clickPage)
+        guard let kept = clickWorkspace.selectedAnnotation else { fail("No replacement was started") }
+        clickWorkspace.commitTextReplacement(kept, text: "Versione buona")
+        let keptCount = clickPage.annotations.count
+        clickWorkspace.beginInlineTextEditing(kept)
+        clickWorkspace.previewTextEdit("Ripensamento da buttare")
+        clickWorkspace.activateSelectTool()
+        check(kept.contents == "Versione buona", "Escape kept \"\(kept.contents ?? "")\" instead of the committed text")
+        check(clickPage.annotations.count == keptCount, "Escape removed a replacement that had been committed")
+        check(clickWorkspace.activeTool == .editText, "Escape on a re-edit already left the Edit Text tool")
+        clickWorkspace.activateSelectTool()
+        check(clickWorkspace.activeTool == .select, "The second Escape did not return to Select")
+
         // Replacing a line with itself has to be invisible on the page.
         check(replacementIsPixelAccurate(source: source), "Replacing text with itself changed the rendered page")
 
@@ -375,6 +418,22 @@ struct TextEditSmoke {
             }
         }
         return Double(differing) / Double(width * height) < 0.005
+    }
+
+    private static func sendEscape(to window: NSWindow) {
+        guard let event = NSEvent.keyEvent(
+            with: .keyDown,
+            location: .zero,
+            modifierFlags: [],
+            timestamp: ProcessInfo.processInfo.systemUptime,
+            windowNumber: window.windowNumber,
+            context: nil,
+            characters: "\u{1b}",
+            charactersIgnoringModifiers: "\u{1b}",
+            isARepeat: false,
+            keyCode: 53
+        ) else { return }
+        window.sendEvent(event)
     }
 
     private static func mouseEvent(_ type: NSEvent.EventType, at point: NSPoint, in window: NSWindow) -> NSEvent? {
