@@ -1601,7 +1601,7 @@ final class PDFWorkspace: ObservableObject {
                 switch annotation.widgetFieldType {
                 case .button:
                     if annotation.buttonWidgetState == .onState {
-                        values[name] = annotation.buttonWidgetStateString ?? "On"
+                        values[name] = annotation.buttonWidgetStateString
                     } else if values[name] == nil {
                         values[name] = "Off"
                     }
@@ -1666,7 +1666,7 @@ final class PDFWorkspace: ObservableObject {
             for annotation in page.annotations where annotation.isSubtype(.widget) {
                 guard let name = annotation.fieldName, let value = values[name] else { continue }
                 if annotation.widgetFieldType == .button {
-                    let onName = annotation.buttonWidgetStateString ?? "On"
+                    let onName = annotation.buttonWidgetStateString
                     let shouldBeOn = value == onName || value.caseInsensitiveCompare("on") == .orderedSame
                     let old = annotation.buttonWidgetState == .onState ? onName : "Off"
                     let new = shouldBeOn ? onName : "Off"
@@ -1686,7 +1686,7 @@ final class PDFWorkspace: ObservableObject {
             for change in changes {
                 let value = forward ? change.new : change.old
                 if change.isButton {
-                    let onName = change.annotation.buttonWidgetStateString ?? "On"
+                    let onName = change.annotation.buttonWidgetStateString
                     change.annotation.buttonWidgetState = value == onName ? .onState : .offState
                 } else {
                     change.annotation.widgetStringValue = value

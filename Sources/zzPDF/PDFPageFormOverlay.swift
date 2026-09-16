@@ -57,7 +57,7 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
     }
 
     func beginInlineEditing(_ request: InlineEditorRequest) {
-        guard let owner else { return }
+        guard owner != nil else { return }
         let annotation = request.annotation
         inlineEditor?.cancel()
         let editor = PDFInlineTextEditor(frame: .zero)
