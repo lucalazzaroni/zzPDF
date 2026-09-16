@@ -64,6 +64,13 @@ enum FreeTextLayout {
     }
 }
 
+/// One line of the page, with the baseline its replacement has to sit on.
+struct ReplaceableLine {
+    let text: String
+    let bounds: CGRect
+    let baseline: CGFloat
+}
+
 /// A run of existing page text that the Edit Text tool can replace in place.
 struct ReplaceableText {
     let page: PDFPage
@@ -73,10 +80,50 @@ struct ReplaceableText {
     let backgroundColor: NSColor
     let coverBounds: CGRect
     let firstBaseline: CGFloat
-    let isMultiline: Bool
+    let lines: [ReplaceableLine]
+
+    var isMultiline: Bool { lines.count > 1 }
 
     var textBounds: CGRect {
         FreeTextLayout.textBounds(covering: coverBounds, firstBaseline: firstBaseline, font: font)
+    }
+
+    /// The box a replacement for `line` occupies, keeping the document's own line spacing
+    /// instead of reflowing the block with the font's.
+    func textBounds(for line: ReplaceableLine) -> CGRect {
+        FreeTextLayout.textBounds(covering: line.bounds, firstBaseline: line.baseline, font: font)
+    }
+}
+
+/// Lays a replacement out over the lines it replaces, filling each to its own width.
+enum LineDistributor {
+    static func distribute(_ text: String, across widths: [CGFloat], font: NSFont) -> [String] {
+        guard widths.count > 1 else { return [text] }
+        var words = text
+            .replacingOccurrences(of: "\n", with: " ")
+            .split(separator: " ", omittingEmptySubsequences: true)
+            .map(String.init)
+        var lines: [String] = []
+        for (index, width) in widths.enumerated() {
+            let isLast = index == widths.count - 1
+            if isLast {
+                lines.append(words.joined(separator: " "))
+                words = []
+                continue
+            }
+            var line = ""
+            while let word = words.first {
+                let candidate = line.isEmpty ? word : line + " " + word
+                let measured = NSAttributedString(string: candidate, attributes: [.font: font]).size().width
+                if !line.isEmpty, measured > FreeTextLayout.availableTextWidth(in: CGRect(x: 0, y: 0, width: width, height: 1)) {
+                    break
+                }
+                line = candidate
+                words.removeFirst()
+            }
+            lines.append(line)
+        }
+        return lines
     }
 }
 
@@ -153,6 +200,15 @@ enum PageTextScanner {
         let firstBounds = first.bounds(for: page)
         let style = textStyle(of: first, fallbackHeight: firstBounds.height)
         let backgroundColor = PageBackgroundSampler.dominantColor(in: union, on: page)
+        let replaceableLines = zip(lines, strings).compactMap { line, string -> ReplaceableLine? in
+            let bounds = line.bounds(for: page)
+            guard bounds.width > 0, bounds.height > 0 else { return nil }
+            return ReplaceableLine(
+                text: string,
+                bounds: bounds,
+                baseline: bounds.minY - style.font.descender
+            )
+        }
         return ReplaceableText(
             page: page,
             text: text,
@@ -161,7 +217,7 @@ enum PageTextScanner {
             backgroundColor: backgroundColor,
             coverBounds: union,
             firstBaseline: firstBounds.minY - style.font.descender,
-            isMultiline: strings.count > 1
+            lines: replaceableLines
         )
     }
 

@@ -41,6 +41,18 @@ struct ContentView: View {
             SignatureSheet(strokes: $workspace.savedSignature)
                 .environmentObject(workspace)
         }
+        .sheet(isPresented: $workspace.showPageStamp) {
+            PageStampSheet()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.showComparison) {
+            ComparisonSheet()
+                .environmentObject(workspace)
+        }
+        .sheet(isPresented: $workspace.showSplit) {
+            SplitSheet()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.showPasswordExport) {
             PasswordExportSheet()
                 .environmentObject(workspace)
@@ -195,6 +207,23 @@ struct WelcomeView: View {
                     Button("Create from Images…") { workspace.importImages() }
                         .buttonStyle(.bordered)
                         .controlSize(.large)
+                }
+                if !workspace.preferences.recentDocumentURLs.isEmpty {
+                    VStack(spacing: 6) {
+                        Text("RECENT")
+                            .font(.caption2.weight(.semibold))
+                            .foregroundStyle(.secondary)
+                        ForEach(workspace.preferences.recentDocumentURLs.prefix(5), id: \.self) { url in
+                            Button {
+                                NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+                            } label: {
+                                Label(url.deletingPathExtension().lastPathComponent, systemImage: "doc")
+                                    .lineLimit(1)
+                            }
+                            .buttonStyle(.link)
+                        }
+                    }
+                    .padding(.top, 4)
                 }
                 HStack(spacing: 26) {
                     WelcomeFeature(icon: "highlighter", text: "Annotate")
@@ -408,6 +437,9 @@ struct SearchField: View {
                 onSubmit: workspace.submitSearch
             )
             if !workspace.searchText.isEmpty {
+                if workspace.isSearching {
+                    ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 12, height: 12)
+                }
                 Text("\(workspace.searchResults.isEmpty ? 0 : workspace.searchIndex + 1)/\(workspace.searchResults.count)")
                     .font(.caption2).foregroundStyle(.secondary)
                 Button { workspace.nextSearchResult(direction: -1) } label: { Image(systemName: "chevron.up") }

@@ -40,13 +40,13 @@ for suite in "${SUITES[@]}"; do
 
     binary="$BUILD_DIR/$suite"
     # A test that declares @main needs -parse-as-library; one written as top-level code
-    # must not have it, so try the common case first and fall back.
-    if ! SDKROOT="$SDK_PATH" "$SWIFTC" -O -sdk "$SDK_PATH" -parse-as-library "${SOURCES[@]}" "$main" -o "$binary" 2>/dev/null; then
-        if ! SDKROOT="$SDK_PATH" "$SWIFTC" -O -sdk "$SDK_PATH" "${SOURCES[@]}" "$main" -o "$binary"; then
-            echo "  $suite: did not compile"
-            FAILED+=("$suite")
-            continue
-        fi
+    # must not have it, or its statements are rejected.
+    MODE=()
+    grep -q '^@main' "$main" && MODE=(-parse-as-library)
+    if ! SDKROOT="$SDK_PATH" "$SWIFTC" -O -sdk "$SDK_PATH" "${MODE[@]}" "${SOURCES[@]}" "$main" -o "$binary"; then
+        echo "  $suite: did not compile"
+        FAILED+=("$suite")
+        continue
     fi
 
     if "$binary" 2>/dev/null; then

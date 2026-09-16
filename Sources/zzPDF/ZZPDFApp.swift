@@ -135,6 +135,11 @@ struct AppCommands: Commands {
                 .disabled(document?.hasDocument != true)
             Button("Export Unprotected Copy…") { document?.removePasswordProtection() }
                 .disabled(document?.isPasswordProtected != true)
+            Button("Page Numbers & Headers…") { document?.beginPageStamp(PageStamper.Options()) }
+                .disabled(document?.hasDocument != true)
+            Button("Watermark…") { document?.beginPageStamp(.watermark) }
+                .disabled(document?.hasDocument != true)
+            Divider()
             Button("Export Pages as Images…") { document?.exportPagesAsImages() }
                 .disabled(document?.hasDocument != true)
             Button("Export Smaller Copy…") { document?.exportSmallerCopy() }
@@ -149,6 +154,10 @@ struct AppCommands: Commands {
             Button("Merge Another PDF…") { document?.mergePDF() }
                 .disabled(document?.hasDocument != true)
             Button("Extract Selected Pages…") { document?.extractSelectedPages() }
+                .disabled(document?.hasDocument != true)
+            Button("Split Document…") { document?.beginSplit() }
+                .disabled(document?.hasDocument != true)
+            Button("Compare with Another PDF…") { document?.compareWithAnotherPDF() }
                 .disabled(document?.hasDocument != true)
             Divider()
             Button("Rotate Left") { document?.rotateSelectedPages(by: -90) }
@@ -201,6 +210,11 @@ struct AppCommands: Commands {
                 document?.inspectorVisible.toggle()
             }
             .disabled(document == nil)
+            Divider()
+            ForEach(ReadingMode.allCases) { mode in
+                Button(mode.label) { document?.setReadingMode(mode) }
+                    .disabled(document == nil)
+            }
             Divider()
             Button("Fit Page") { document?.fitPage() }
                 .keyboardShortcut("0", modifiers: [.command])

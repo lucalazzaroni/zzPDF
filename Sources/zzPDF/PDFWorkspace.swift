@@ -1,6 +1,7 @@
 import AppKit
 import PDFKit
 import SwiftUI
+import UniformTypeIdentifiers
 @preconcurrency import Vision
 
 enum CanvasTool: String, CaseIterable, Identifiable {
@@ -102,18 +103,30 @@ private final class CoverLink {
     }
 }
 
-private struct TextEditSession {
+/// One line of an edit in progress: the replacement text, the rectangle hiding the
+/// original, and the geometry to restore if the edit is abandoned.
+private struct TextEditLine {
     let annotation: PDFAnnotation
     let cover: PDFAnnotation?
-    let page: PDFPage
-    let isNew: Bool
-    let multiline: Bool
     let baseline: CGFloat
-    let wasDirtyBefore: Bool
+    let bounds: CGRect
     let contents: String
     let font: NSFont?
-    let bounds: CGRect
     let coverBounds: CGRect?
+}
+
+private struct TextEditSession {
+    let lines: [TextEditLine]
+    let page: PDFPage
+    let isNew: Bool
+    let wasDirtyBefore: Bool
+
+    var annotation: PDFAnnotation { lines[0].annotation }
+    var multiline: Bool { lines.count > 1 }
+    /// What the editor starts with: the block as one piece of text.
+    var seedText: String { lines.map(\.contents).joined(separator: "\n") }
+    var annotations: [PDFAnnotation] { lines.map(\.annotation) }
+    var covers: [PDFAnnotation] { lines.compactMap(\.cover) }
 }
 
 private struct PDFEditAction {
@@ -124,7 +137,9 @@ private struct PDFEditAction {
 
 @MainActor
 final class PDFWorkspace: ObservableObject {
-    @Published var pdfDocument: PDFDocument?
+    @Published var pdfDocument: PDFDocument? {
+        didSet { observeSearch(in: pdfDocument) }
+    }
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
     @Published var selectedPageIndexes: Set<Int> = [0]
@@ -150,10 +165,24 @@ final class PDFWorkspace: ObservableObject {
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
     @Published var searchFocusRequest = 0
+    @Published private(set) var isSearching = false
+    @Published var searchMatchesCase = false { didSet { rerunSearchIfNeeded() } }
+    @Published var searchWholeWords = false { didSet { rerunSearchIfNeeded() } }
     @Published var sidebarVisible = true { didSet { preferences.sidebarVisible = sidebarVisible } }
     @Published var inspectorVisible = true { didSet { preferences.inspectorVisible = inspectorVisible } }
     @Published var showSignaturePad = false
     @Published var showPasswordExport = false
+    @Published var showPageStamp = false
+    @Published var showSplit = false
+    @Published var showComparison = false
+    @Published private(set) var comparison: [DocumentComparer.PageResult] = []
+    @Published private(set) var comparedDocument: PDFDocument?
+    @Published private(set) var comparedName = ""
+    @Published private(set) var isComparing = false
+    @Published var splitEveryPages = 1
+    @Published var splitAtContents = false
+    @Published var stampOptions = PageStamper.Options()
+    @Published var stampAppliesToSelectionOnly = false
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
     @Published var showFreeTextEditor = false
@@ -180,6 +209,7 @@ final class PDFWorkspace: ObservableObject {
     }
     /// True when the document on disk asked for a password to open.
     @Published private(set) var isPasswordProtected = false
+    @Published private(set) var digitalSignatures: [DigitalSignatureScanner.Signature] = []
 
     let preferences: AppPreferences
     private let recoveryStore: TemporaryRecoveryStore
@@ -207,6 +237,9 @@ final class PDFWorkspace: ObservableObject {
     private var restoringViewState = false
     private var recoveryIdentifier = UUID()
     private var temporaryAutosaveWorkItem: DispatchWorkItem?
+    private var searchObservers: [NSObjectProtocol] = []
+    private var searchMatchCounts: [ObjectIdentifier: Int] = [:]
+    private var searchSnippets: [String] = []
 
     weak var pdfView: InteractivePDFView?
 
@@ -277,6 +310,7 @@ final class PDFWorkspace: ObservableObject {
         pdfDocument = document
         fileURL = url
         isPasswordProtected = wasLocked
+        digitalSignatures = (try? Data(contentsOf: url)).map(DigitalSignatureScanner.signatures(in:)) ?? []
         preferences.noteRecentDocument(url)
         currentPageIndex = 0
         activeTool = preferences.initialTool
@@ -576,6 +610,18 @@ final class PDFWorkspace: ObservableObject {
         textAnnotation(forCover: annotation) != nil
     }
 
+    /// Opens whichever editor suits the annotation, from the sidebar list.
+    func edit(_ annotation: PDFAnnotation) {
+        reveal(annotation)
+        if annotation.isSubtype(.text) {
+            beginEditingSelectedNote()
+        } else if annotation.isSubtype(.freeText) {
+            beginInlineTextEditing(annotation)
+        } else {
+            statusMessage = "\(AnnotationEntry(annotation: annotation, pageIndex: currentPageIndex).kind) has no text to edit"
+        }
+    }
+
     func reveal(_ annotation: PDFAnnotation) {
         guard let page = annotation.page, let document = pdfDocument else { return }
         currentPageIndex = document.index(for: page)
@@ -774,6 +820,124 @@ final class PDFWorkspace: ObservableObject {
         }
     }
 
+    // MARK: - Comparing
+
+    var comparisonChangeCount: Int { comparison.filter(\.change.isChange).count }
+
+    func compareWithAnotherPDF() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.pdf]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the other version of this document"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        guard let other = PDFDocument(url: url), !other.isLocked else {
+            presentError("That PDF could not be opened for comparison.")
+            return
+        }
+        comparedDocument = other
+        comparedName = url.deletingPathExtension().lastPathComponent
+        comparison = []
+        isComparing = true
+        showComparison = true
+        statusMessage = "Comparing with \(comparedName)…"
+
+        Task { @MainActor in
+            let results = DocumentComparer.compare(document, with: other)
+            comparison = results
+            isComparing = false
+            let changed = results.filter(\.change.isChange).count
+            statusMessage = changed == 0
+                ? "The two documents match"
+                : "\(changed) page\(changed == 1 ? "" : "s") differ"
+        }
+    }
+
+    func comparisonImage(forPageNumber number: Int) -> NSImage? {
+        let index = number - 1
+        let original = (index < pageCount) ? pdfDocument?.page(at: index) : nil
+        let revised = (index < (comparedDocument?.pageCount ?? 0)) ? comparedDocument?.page(at: index) : nil
+        return DocumentComparer.differenceImage(original, revised)
+    }
+
+    // MARK: - Splitting
+
+    /// Where the document would be cut: every N pages, or at each top-level entry of its
+    /// own table of contents.
+    var splitStartIndexes: [Int] {
+        guard pageCount > 0 else { return [] }
+        if splitAtContents {
+            let starts = outlineStartIndexes()
+            if !starts.isEmpty { return starts }
+        }
+        let step = max(1, splitEveryPages)
+        return Array(stride(from: 0, to: pageCount, by: step))
+    }
+
+    private func outlineStartIndexes() -> [Int] {
+        guard let root = outlineRoot, let document = pdfDocument else { return [] }
+        var indexes: Set<Int> = [0]
+        for position in 0..<root.numberOfChildren {
+            guard let child = root.child(at: position) else { continue }
+            let page = child.destination?.page ?? (child.action as? PDFActionGoTo)?.destination.page
+            guard let page else { continue }
+            let index = document.index(for: page)
+            if index != NSNotFound { indexes.insert(index) }
+        }
+        return indexes.sorted()
+    }
+
+    var splitPartCount: Int { splitStartIndexes.count }
+
+    func beginSplit() {
+        splitEveryPages = max(1, min(splitEveryPages, max(1, pageCount)))
+        splitAtContents = outlineRoot != nil && splitAtContents
+        showSplit = true
+    }
+
+    func splitDocument() {
+        guard pdfDocument != nil else { return }
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.canCreateDirectories = true
+        panel.prompt = "Split"
+        panel.message = "Choose where to save the parts"
+        if !preferences.exportFolderPath.isEmpty {
+            panel.directoryURL = URL(fileURLWithPath: preferences.exportFolderPath)
+        }
+        guard panel.runModal() == .OK, let folder = panel.url else { return }
+        let written = writeSplitParts(into: folder)
+        showSplit = false
+        guard written > 0 else {
+            presentError("The document could not be split.")
+            return
+        }
+        statusMessage = "Split into \(written) file\(written == 1 ? "" : "s")"
+    }
+
+    @discardableResult
+    func writeSplitParts(into folder: URL) -> Int {
+        guard let document = pdfDocument else { return 0 }
+        let starts = splitStartIndexes
+        guard !starts.isEmpty else { return 0 }
+        var written = 0
+        for (position, start) in starts.enumerated() {
+            let end = position + 1 < starts.count ? starts[position + 1] : document.pageCount
+            guard start < end else { continue }
+            let part = PDFDocument()
+            for index in start..<end {
+                guard let page = document.page(at: index)?.copy() as? PDFPage else { continue }
+                part.insert(page, at: part.pageCount)
+            }
+            guard part.pageCount > 0 else { continue }
+            let name = String(format: "%@-%02d.pdf", displayName, position + 1)
+            if part.write(to: folder.appendingPathComponent(name)) { written += 1 }
+        }
+        return written
+    }
+
     func extractSelectedPages() {
         let indexes = targetPageIndexes
         guard !indexes.isEmpty else { return }
@@ -891,6 +1055,7 @@ final class PDFWorkspace: ObservableObject {
             annotation.color = kind == .highlight
                 ? nsAnnotationColor.highlightTint(alpha: preferences.highlightOpacity)
                 : nsAnnotationColor
+            sign(annotation)
             page.addAnnotation(annotation)
             additions.append((page, annotation))
         }
@@ -963,6 +1128,7 @@ final class PDFWorkspace: ObservableObject {
         }
         if let annotation {
             let wasDirty = isDirty
+            sign(annotation)
             page.addAnnotation(annotation)
             selectAnnotation(annotation)
             changed("Annotation added")
@@ -984,6 +1150,20 @@ final class PDFWorkspace: ObservableObject {
                 })
             }
         }
+    }
+
+    /// Stamps the author and the time onto an annotation, the way every other PDF
+    /// application does, so a reader can tell who left what and when.
+    ///
+    /// Replaced page text is the one exception: its two annotations are paired through
+    /// the author field, which is the only per-annotation string PDFKit writes back out,
+    /// so they keep carrying their pair identifier instead of a name.
+    func sign(_ annotation: PDFAnnotation) {
+        annotation.modificationDate = Date()
+        guard !TextEditMarker.isTextEdit(annotation) else { return }
+        let author = preferences.annotationAuthor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !author.isEmpty else { return }
+        annotation.userName = author
     }
 
     private func normalizedBounds(from points: [CGPoint], fallback: CGPoint, size: CGSize) -> CGRect {
@@ -1036,6 +1216,7 @@ final class PDFWorkspace: ObservableObject {
         if closed, let first = points.first { vertices.append(first) }
         guard let annotation = makeInkAnnotation(points: vertices, color: nsAnnotationColor, width: lineWidth) else { return }
         let wasDirty = isDirty
+        sign(annotation)
         page.addAnnotation(annotation)
         selectAnnotation(annotation)
         registerEdit(wasDirtyBefore: wasDirty, undo: {
@@ -1407,6 +1588,117 @@ final class PDFWorkspace: ObservableObject {
         }
     }
 
+    // MARK: - Form data
+
+    /// Every named form field in the document and what it currently holds.
+    func formFieldValues() -> [String: String] {
+        guard let document = pdfDocument else { return [:] }
+        var values: [String: String] = [:]
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where annotation.isSubtype(.widget) {
+                guard let name = annotation.fieldName, !name.isEmpty else { continue }
+                switch annotation.widgetFieldType {
+                case .button:
+                    if annotation.buttonWidgetState == .onState {
+                        values[name] = annotation.buttonWidgetStateString
+                    } else if values[name] == nil {
+                        values[name] = "Off"
+                    }
+                default:
+                    values[name] = annotation.widgetStringValue ?? ""
+                }
+            }
+        }
+        return values
+    }
+
+    var hasFormFields: Bool { !formFieldValues().isEmpty }
+
+    func exportFormData() {
+        finishActiveTextEditing()
+        let values = formFieldValues()
+        guard !values.isEmpty else {
+            statusMessage = "This document has no form fields"
+            return
+        }
+        guard let url = chooseSaveURL(defaultName: "\(displayName)-form.json", type: .json) else { return }
+        guard writeFormData(to: url) else {
+            presentError("The form data could not be written.")
+            return
+        }
+        statusMessage = "\(values.count) field\(values.count == 1 ? "" : "s") exported"
+    }
+
+    @discardableResult
+    func writeFormData(to url: URL) -> Bool {
+        let values = formFieldValues()
+        guard !values.isEmpty,
+              let data = try? JSONEncoder.sortedPretty.encode(values) else { return false }
+        return (try? data.write(to: url, options: .atomic)) != nil
+    }
+
+    func importFormData() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        panel.message = "Choose the form data to fill in"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        let filled = applyFormData(from: url)
+        guard filled > 0 else {
+            presentError("No field in this document matched that file.")
+            return
+        }
+        statusMessage = "\(filled) field\(filled == 1 ? "" : "s") filled in"
+    }
+
+    /// Fills in every field whose name appears in the file, as one undo step.
+    @discardableResult
+    func applyFormData(from url: URL) -> Int {
+        guard let document = pdfDocument,
+              let data = try? Data(contentsOf: url),
+              let values = try? JSONDecoder().decode([String: String].self, from: data),
+              !values.isEmpty else { return 0 }
+
+        var changes: [(annotation: PDFAnnotation, old: String, new: String, isButton: Bool)] = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations where annotation.isSubtype(.widget) {
+                guard let name = annotation.fieldName, let value = values[name] else { continue }
+                if annotation.widgetFieldType == .button {
+                    let onName = annotation.buttonWidgetStateString
+                    let shouldBeOn = value == onName || value.caseInsensitiveCompare("on") == .orderedSame
+                    let old = annotation.buttonWidgetState == .onState ? onName : "Off"
+                    let new = shouldBeOn ? onName : "Off"
+                    guard old != new else { continue }
+                    changes.append((annotation, old, new, true))
+                } else {
+                    let old = annotation.widgetStringValue ?? ""
+                    guard old != value else { continue }
+                    changes.append((annotation, old, value, false))
+                }
+            }
+        }
+        guard !changes.isEmpty else { return 0 }
+
+        let wasDirty = isDirty
+        let apply: (Bool) -> Void = { forward in
+            for change in changes {
+                let value = forward ? change.new : change.old
+                if change.isButton {
+                    let onName = change.annotation.buttonWidgetStateString
+                    change.annotation.buttonWidgetState = value == onName ? .onState : .offState
+                } else {
+                    change.annotation.widgetStringValue = value
+                }
+            }
+        }
+        apply(true)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { apply(false) }, redo: { apply(true) })
+        changed("Form filled in")
+        return changes.count
+    }
+
     func updateButtonField(_ annotation: PDFAnnotation, to state: PDFWidgetCellState) {
         let oldState = annotation.buttonWidgetState
         guard oldState != state else { return }
@@ -1467,73 +1759,86 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.cancelInlineTextEditing()
         let page = replacement.page
         let wasDirty = isDirty
-        let identifier = TextEditMarker.makeIdentifier()
-        let bounds = replacement.textBounds
+        guard !replacement.lines.isEmpty else { return }
 
-        let cover = PDFAnnotation(
-            bounds: FreeTextLayout.coverBounds(for: bounds, font: replacement.font)
-                .insetBy(dx: -FreeTextLayout.coverPadding, dy: -FreeTextLayout.coverPadding / 2),
-            forType: .square,
-            withProperties: nil
-        )
-        cover.color = replacement.backgroundColor
-        cover.interiorColor = replacement.backgroundColor
-        let border = PDFBorder()
-        border.lineWidth = 0
-        cover.border = border
-        cover.userName = identifier
+        var lines: [TextEditLine] = []
+        for line in replacement.lines {
+            let bounds = replacement.textBounds(for: line)
+            let identifier = TextEditMarker.makeIdentifier()
 
-        let text = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
-        text.contents = replacement.text
-        text.font = replacement.font
-        text.fontColor = replacement.fontColor
-        text.color = .clear
-        text.alignment = .left
-        text.userName = identifier
+            let cover = PDFAnnotation(
+                bounds: FreeTextLayout.coverBounds(for: bounds, font: replacement.font)
+                    .insetBy(dx: -FreeTextLayout.coverPadding, dy: -FreeTextLayout.coverPadding / 2),
+                forType: .square,
+                withProperties: nil
+            )
+            cover.color = replacement.backgroundColor
+            cover.interiorColor = replacement.backgroundColor
+            let border = PDFBorder()
+            border.lineWidth = 0
+            cover.border = border
+            cover.userName = identifier
 
-        page.addAnnotation(cover)
-        page.addAnnotation(text)
-        link(cover: cover, to: text)
-        activeTextEdit = TextEditSession(
-            annotation: text,
-            cover: cover,
-            page: page,
-            isNew: true,
-            multiline: replacement.isMultiline,
-            baseline: replacement.firstBaseline,
-            wasDirtyBefore: wasDirty,
-            contents: replacement.text,
-            font: replacement.font,
-            bounds: bounds,
-            coverBounds: cover.bounds
-        )
-        selectAnnotation(text)
+            let text = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
+            text.contents = line.text
+            text.font = replacement.font
+            text.fontColor = replacement.fontColor
+            text.color = .clear
+            text.alignment = .left
+            text.userName = identifier
+
+            page.addAnnotation(cover)
+            page.addAnnotation(text)
+            link(cover: cover, to: text)
+            lines.append(
+                TextEditLine(
+                    annotation: text,
+                    cover: cover,
+                    baseline: line.baseline,
+                    bounds: bounds,
+                    contents: line.text,
+                    font: replacement.font,
+                    coverBounds: cover.bounds
+                )
+            )
+        }
+
+        activeTextEdit = TextEditSession(lines: lines, page: page, isNew: true, wasDirtyBefore: wasDirty)
+        selectAnnotation(lines[0].annotation)
         isDirty = true
         statusMessage = "Editing page text — Escape restores the original"
         pdfView?.needsDisplay = true
-        pdfView?.beginInlineTextEditing(text, on: page, singleLine: !replacement.isMultiline)
+        pdfView?.beginInlineTextEditing(
+            lines[0].annotation,
+            on: page,
+            singleLine: lines.count == 1,
+            seedText: lines.map(\.contents).joined(separator: "\n"),
+            frameBounds: replacement.textBounds
+        )
     }
 
     func beginInlineTextEditing(_ annotation: PDFAnnotation) {
         guard annotation.isSubtype(.freeText), let page = annotation.page else { return }
         pdfView?.cancelInlineTextEditing()
         let contents = annotation.contents ?? ""
-        let multiline = contents.contains("\n")
-        activeTextEdit = TextEditSession(
+        let line = TextEditLine(
             annotation: annotation,
             cover: linkedCover(for: annotation),
-            page: page,
-            isNew: false,
-            multiline: multiline,
             baseline: FreeTextLayout.baseline(of: annotation) ?? annotation.bounds.minY,
-            wasDirtyBefore: isDirty,
+            bounds: annotation.bounds,
             contents: contents,
             font: annotation.font,
-            bounds: annotation.bounds,
             coverBounds: linkedCover(for: annotation)?.bounds
         )
+        activeTextEdit = TextEditSession(lines: [line], page: page, isNew: false, wasDirtyBefore: isDirty)
         selectAnnotation(annotation)
-        pdfView?.beginInlineTextEditing(annotation, on: page, singleLine: !multiline)
+        pdfView?.beginInlineTextEditing(
+            annotation,
+            on: page,
+            singleLine: !contents.contains("\n"),
+            seedText: contents,
+            frameBounds: annotation.bounds
+        )
     }
 
     /// Reflows the annotation while the editor is open so the box the user types in is
@@ -1546,27 +1851,44 @@ final class PDFWorkspace: ObservableObject {
 
     @discardableResult
     private func applyTextEditLayout(_ text: String, session: TextEditSession) -> NSFont? {
-        guard let baseFont = session.font ?? session.annotation.font else { return nil }
-        let result = TextFitting.fit(
-            text: text,
-            font: baseFont,
-            in: session.bounds,
-            multiline: session.multiline,
-            within: session.page.bounds(for: .cropBox)
-        )
-        let top = FreeTextLayout.topEdge(forBaseline: session.baseline, font: result.font)
-        let bottom = min(result.bounds.minY, top - 4)
-        session.annotation.contents = text
-        session.annotation.font = result.font
-        session.annotation.bounds = CGRect(
-            x: result.bounds.minX,
-            y: bottom,
-            width: result.bounds.width,
-            height: top - bottom
-        )
-        retainCover(for: session.annotation)
+        guard let baseFont = session.lines[0].font ?? session.annotation.font else { return nil }
+        let limit = session.page.bounds(for: .cropBox)
+
+        // A block keeps the document's own line spacing: the text is spread over the boxes
+        // of the lines it replaces rather than reflowed with the font's line height.
+        let pieces = session.multiline
+            ? LineDistributor.distribute(
+                text,
+                across: session.lines.map(\.bounds.width),
+                font: baseFont
+              )
+            : [text]
+
+        var displayedFont = baseFont
+        for (index, line) in session.lines.enumerated() {
+            let piece = index < pieces.count ? pieces[index] : ""
+            let result = TextFitting.fit(
+                text: piece,
+                font: baseFont,
+                in: line.bounds,
+                multiline: false,
+                within: limit
+            )
+            let top = FreeTextLayout.topEdge(forBaseline: line.baseline, font: result.font)
+            let bottom = min(result.bounds.minY, top - 4)
+            line.annotation.contents = piece
+            line.annotation.font = result.font
+            line.annotation.bounds = CGRect(
+                x: result.bounds.minX,
+                y: bottom,
+                width: result.bounds.width,
+                height: top - bottom
+            )
+            retainCover(for: line.annotation)
+            if index == 0 { displayedFont = result.font }
+        }
         pdfView?.needsDisplay = true
-        return result.font
+        return displayedFont
     }
 
     func commitTextReplacement(_ annotation: PDFAnnotation, text: String) {
@@ -1578,45 +1900,49 @@ final class PDFWorkspace: ObservableObject {
         activeTextEdit = nil
         applyTextEditLayout(text, session: session)
         let page = session.page
-        let cover = session.cover
+        let covers = session.covers
+        let annotations = session.annotations
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         if session.isNew {
             registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-                page.removeAnnotation(annotation)
-                if let cover { page.removeAnnotation(cover) }
+                for annotation in annotations { page.removeAnnotation(annotation) }
+                for cover in covers { page.removeAnnotation(cover) }
             }, redo: {
-                if let cover { page.addAnnotation(cover) }
-                page.addAnnotation(annotation)
+                for cover in covers { page.addAnnotation(cover) }
+                for annotation in annotations { page.addAnnotation(annotation) }
             })
             synchronizeSelectedTextAppearance()
             changed(isEmpty ? "Page text removed" : "Page text replaced")
             return
         }
 
-        let newContents = annotation.contents ?? ""
-        let newFont = annotation.font
-        let newBounds = annotation.bounds
-        let newCoverBounds = cover?.bounds
-        guard newContents != session.contents || newBounds != session.bounds else {
+        let before = session.lines
+        let after = session.lines.map {
+            ($0.annotation, $0.annotation.contents ?? "", $0.annotation.font, $0.annotation.bounds, $0.cover?.bounds)
+        }
+        let unchanged = zip(before, after).allSatisfy { line, current in
+            line.contents == current.1 && line.bounds == current.3
+        }
+        guard !unchanged else {
             isDirty = session.wasDirtyBefore
             pdfView?.needsDisplay = true
             return
         }
-        let previousContents = session.contents
-        let previousFont = session.font
-        let previousBounds = session.bounds
-        let previousCoverBounds = session.coverBounds
         registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-            annotation.contents = previousContents
-            annotation.font = previousFont
-            annotation.bounds = previousBounds
-            if let cover, let previousCoverBounds { cover.bounds = previousCoverBounds }
+            for line in before {
+                line.annotation.contents = line.contents
+                line.annotation.font = line.font
+                line.annotation.bounds = line.bounds
+                if let cover = line.cover, let bounds = line.coverBounds { cover.bounds = bounds }
+            }
         }, redo: {
-            annotation.contents = newContents
-            annotation.font = newFont
-            annotation.bounds = newBounds
-            if let cover, let newCoverBounds { cover.bounds = newCoverBounds }
+            for (index, state) in after.enumerated() {
+                state.0.contents = state.1
+                state.0.font = state.2
+                state.0.bounds = state.3
+                if let cover = before[index].cover, let bounds = state.4 { cover.bounds = bounds }
+            }
         })
         synchronizeSelectedTextAppearance()
         changed("Text updated")
@@ -1632,15 +1958,19 @@ final class PDFWorkspace: ObservableObject {
         }
         activeTextEdit = nil
         if session.isNew {
-            session.page.removeAnnotation(annotation)
-            if let cover = session.cover { session.page.removeAnnotation(cover) }
-            unlink(text: annotation)
+            for line in session.lines {
+                session.page.removeAnnotation(line.annotation)
+                if let cover = line.cover { session.page.removeAnnotation(cover) }
+                unlink(text: line.annotation)
+            }
             selectedAnnotation = nil
         } else {
-            annotation.contents = session.contents
-            annotation.font = session.font
-            annotation.bounds = session.bounds
-            if let cover = session.cover, let coverBounds = session.coverBounds { cover.bounds = coverBounds }
+            for line in session.lines {
+                line.annotation.contents = line.contents
+                line.annotation.font = line.font
+                line.annotation.bounds = line.bounds
+                if let cover = line.cover, let bounds = line.coverBounds { cover.bounds = bounds }
+            }
         }
         isDirty = session.wasDirtyBefore
         statusMessage = session.isNew ? "Text edit discarded" : "Text editing cancelled"
@@ -1880,35 +2210,172 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.needsDisplay = true
     }
 
+    /// PDFKit reports matches as it finds them, one notification per hit, and one more
+    /// when the sweep is over.
+    private func observeSearch(in document: PDFDocument?) {
+        for token in searchObservers { NotificationCenter.default.removeObserver(token) }
+        searchObservers = []
+        isSearching = false
+        guard let document else { return }
+        let center = NotificationCenter.default
+        searchObservers.append(
+            center.addObserver(forName: .PDFDocumentDidFindMatch, object: document, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let selection = notification.userInfo?["PDFDocumentFoundSelection"] as? PDFSelection else { return }
+                    self?.collectSearchMatch(selection)
+                }
+            }
+        )
+        searchObservers.append(
+            center.addObserver(forName: .PDFDocumentDidEndFind, object: document, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.finishSearch() }
+            }
+        )
+    }
+
+    var searchOptions: NSString.CompareOptions {
+        var options: NSString.CompareOptions = []
+        if !searchMatchesCase { options.insert(.caseInsensitive) }
+        return options
+    }
+
+    /// Searching a long document takes long enough to freeze the window, so PDFKit runs it
+    /// on its own and reports back as it goes.
     func updateSearch() {
         guard let document = pdfDocument else { return }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         activeSearchQuery = query
-        searchResults = query.isEmpty ? [] : document.findString(query, withOptions: .caseInsensitive)
+        document.cancelFindString()
+        searchResults = []
+        searchSnippets = []
+        searchMatchCounts = [:]
         searchIndex = 0
-        if searchResults.isEmpty {
-            pdfView?.clearSelection()
-        } else {
+        pdfView?.clearSelection()
+        guard !query.isEmpty else {
+            isSearching = false
+            statusMessage = "\(pageCount) pages"
+            return
+        }
+        isSearching = true
+        statusMessage = "Searching for \u{201C}\(query)\u{201D}…"
+        document.beginFindString(query, withOptions: searchOptions)
+    }
+
+    private func rerunSearchIfNeeded() {
+        guard !activeSearchQuery.isEmpty else { return }
+        updateSearch()
+    }
+
+    /// Called for each match PDFKit turns up while a search runs. Matches arrive in
+    /// document order, so counting them per page tells us which occurrence of the query
+    /// this one is, which is what makes a whole-word test and a snippet possible: a
+    /// PDFSelection knows its page and its rectangle, but not where it sits in the text.
+    func collectSearchMatch(_ selection: PDFSelection) {
+        guard let page = selection.pages.first else { return }
+        let key = ObjectIdentifier(page)
+        let occurrence = searchMatchCounts[key, default: 0]
+        searchMatchCounts[key] = occurrence + 1
+        let range = characterRange(ofOccurrence: occurrence, on: page)
+        if searchWholeWords, let range, let text = page.string as NSString? {
+            guard isWordBoundary(text, around: range) else { return }
+        }
+        searchResults.append(selection)
+        searchSnippets.append(snippet(for: range, on: page, fallback: selection.string ?? ""))
+        if searchResults.count == 1 {
+            searchIndex = 0
             revealSearchResult(at: 0)
         }
-        statusMessage = query.isEmpty ? "\(pageCount) pages" : "\(searchResults.count) results"
+    }
+
+    func finishSearch() {
+        isSearching = false
+        statusMessage = searchResults.isEmpty
+            ? "No results for \u{201C}\(activeSearchQuery)\u{201D}"
+            : "\(searchResults.count) result\(searchResults.count == 1 ? "" : "s")"
+    }
+
+    private func characterRange(ofOccurrence occurrence: Int, on page: PDFPage) -> NSRange? {
+        guard !activeSearchQuery.isEmpty, let pageText = page.string else { return nil }
+        let text = pageText as NSString
+        let options: NSString.CompareOptions = searchMatchesCase ? [] : [.caseInsensitive]
+        var location = 0
+        var seen = 0
+        while location < text.length {
+            let found = text.range(
+                of: activeSearchQuery,
+                options: options,
+                range: NSRange(location: location, length: text.length - location)
+            )
+            guard found.location != NSNotFound else { return nil }
+            if seen == occurrence { return found }
+            seen += 1
+            location = found.location + max(1, found.length)
+        }
+        return nil
+    }
+
+    private func isWordBoundary(_ text: NSString, around range: NSRange) -> Bool {
+        func isLetter(at index: Int) -> Bool {
+            guard index >= 0, index < text.length else { return false }
+            let character = text.substring(with: NSRange(location: index, length: 1))
+            guard let scalar = character.unicodeScalars.first else { return false }
+            return CharacterSet.alphanumerics.contains(scalar)
+        }
+        return !isLetter(at: range.location - 1) && !isLetter(at: range.location + range.length)
+    }
+
+    /// A short piece of the page around a match, for the results list.
+    private func snippet(for range: NSRange?, on page: PDFPage, fallback: String) -> String {
+        guard let range, let pageText = page.string else { return fallback }
+        let text = pageText as NSString
+        let start = max(0, range.location - 32)
+        let end = min(text.length, range.location + range.length + 32)
+        var snippet = text.substring(with: NSRange(location: start, length: end - start))
+        snippet = snippet.replacingOccurrences(of: "\n", with: " ")
+        if start > 0 { snippet = "\u{2026}" + snippet }
+        if end < text.length { snippet += "\u{2026}" }
+        return snippet.trimmingCharacters(in: .whitespaces)
+    }
+
+    func searchSnippet(for selection: PDFSelection) -> String {
+        guard let index = searchResults.firstIndex(of: selection), index < searchSnippets.count else {
+            return selection.string ?? ""
+        }
+        return searchSnippets[index]
+    }
+
+    func pageNumber(for selection: PDFSelection) -> Int {
+        guard let page = selection.pages.first, let document = pdfDocument else { return 0 }
+        return document.index(for: page) + 1
+    }
+
+    func showSearchResult(_ selection: PDFSelection) {
+        guard let index = searchResults.firstIndex(of: selection) else { return }
+        searchIndex = index
+        revealSearchResult(at: index)
     }
 
     func submitSearch(direction: Int) {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if query != activeSearchQuery {
+        guard query == activeSearchQuery else {
             updateSearch()
-            if direction < 0, searchResults.count > 1 {
-                searchIndex = searchResults.count - 1
-                revealSearchResult(at: searchIndex)
-            }
             return
         }
         nextSearchResult(direction: direction)
     }
 
     func focusSearch() {
+        sidebarVisible = true
         searchFocusRequest += 1
+    }
+
+    /// Blocks until the running search finishes, for tests and for anything that needs the
+    /// full result set rather than the matches found so far.
+    func waitForSearch(timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while isSearching, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
     }
 
     func nextSearchResult(direction: Int) {
@@ -2055,6 +2522,12 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.refreshInteractionAppearance()
     }
 
+    func setReadingMode(_ mode: ReadingMode) {
+        preferences.readingMode = mode
+        pdfView?.applyReadingMode(mode)
+        statusMessage = "\(mode.label) reading mode"
+    }
+
     func applyDefaultPreferences() {
         sidebarVisible = preferences.sidebarVisible
         inspectorVisible = preferences.inspectorVisible
@@ -2080,6 +2553,79 @@ final class PDFWorkspace: ObservableObject {
             zoom: zoom ?? Double(pdfView?.scaleFactor ?? 0),
             layout: pageLayout
         )
+    }
+
+    // MARK: - Stamping pages
+
+    func beginPageStamp(_ options: PageStamper.Options) {
+        stampOptions = options
+        stampAppliesToSelectionOnly = selectedPageIndexes.count > 1
+        showPageStamp = true
+    }
+
+    var stampTargetIndexes: [Int] {
+        stampAppliesToSelectionOnly ? targetPageIndexes : Array(0..<pageCount)
+    }
+
+    /// A preview of what the stamp will look like on the first page it touches.
+    func stampPreview(size: CGSize) -> NSImage? {
+        guard let document = pdfDocument,
+              let index = stampTargetIndexes.first,
+              let page = document.page(at: index),
+              let stamped = stampedPage(page, at: index, sequence: 0, in: document) else { return nil }
+        let preview = PDFDocument()
+        preview.insert(stamped, at: 0)
+        return preview.page(at: 0)?.thumbnail(of: size, for: .cropBox)
+    }
+
+    private func stampedPage(_ page: PDFPage, at index: Int, sequence: Int, in document: PDFDocument) -> PDFPage? {
+        let text = PageStamper.expand(
+            stampOptions.text,
+            pageIndex: index,
+            pageCount: document.pageCount,
+            documentName: displayName,
+            sequence: sequence,
+            options: stampOptions
+        )
+        return PageStamper.stamped(page, text: text, options: stampOptions)
+    }
+
+    /// Draws the stamp into each target page. The pages are rebuilt rather than annotated,
+    /// so the result is part of the document straight away and survives any export.
+    func applyPageStamp() {
+        finishActiveTextEditing()
+        guard let document = pdfDocument else { return }
+        let indexes = stampTargetIndexes
+        guard !indexes.isEmpty else { return }
+
+        var replacements: [(index: Int, original: PDFPage, stamped: PDFPage)] = []
+        for (sequence, index) in indexes.enumerated() {
+            guard let page = document.page(at: index),
+                  let stamped = stampedPage(page, at: index, sequence: sequence, in: document) else { continue }
+            replacements.append((index, page, stamped))
+        }
+        guard !replacements.isEmpty else {
+            presentError("The pages could not be stamped.")
+            return
+        }
+
+        let wasDirty = isDirty
+        let apply: ([(index: Int, original: PDFPage, stamped: PDFPage)], Bool) -> Void = { items, stamped in
+            for item in items {
+                guard item.index < document.pageCount else { continue }
+                document.removePage(at: item.index)
+                document.insert(stamped ? item.stamped : item.original, at: item.index)
+            }
+        }
+        apply(replacements, true)
+        let recorded = replacements
+        registerEdit(
+            wasDirtyBefore: wasDirty,
+            undo: { apply(recorded, false) },
+            redo: { apply(recorded, true) }
+        )
+        showPageStamp = false
+        changed(replacements.count == 1 ? "1 page stamped" : "\(replacements.count) pages stamped")
     }
 
     /// Runs OCR over every page that has no text and rebuilds those pages with an
@@ -2375,9 +2921,9 @@ final class PDFWorkspace: ObservableObject {
         return true
     }
 
-    private func chooseSaveURL(defaultName: String) -> URL? {
+    private func chooseSaveURL(defaultName: String, type: UTType = .pdf) -> URL? {
         let panel = NSSavePanel()
-        panel.allowedContentTypes = [.pdf]
+        panel.allowedContentTypes = [type]
         panel.nameFieldStringValue = defaultName
         if !preferences.exportFolderPath.isEmpty {
             let folder = URL(fileURLWithPath: preferences.exportFolderPath)
@@ -2480,6 +3026,27 @@ struct AnnotationEntry: Identifiable {
         return contents.replacingOccurrences(of: "\n", with: " ")
     }
 
+    /// Who left it and when, when the annotation says so. Replaced text carries its pair
+    /// identifier in the author field, so that one is never shown as a name.
+    var attribution: String? {
+        var parts: [String] = []
+        if let author = annotation.userName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !author.isEmpty, !TextEditMarker.isTextEdit(annotation) {
+            parts.append(author)
+        }
+        if let date = annotation.modificationDate {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            parts.append(formatter.string(from: date))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var isEditable: Bool {
+        annotation.isSubtype(.text) || annotation.isSubtype(.freeText)
+    }
+
     var symbol: String {
         switch kind {
         case "Redaction": return "eye.slash"
@@ -2506,5 +3073,14 @@ extension NSColor {
         let isNeutral = base.saturationComponent < 0.15 && base.brightnessComponent < 0.35
         let tint = isNeutral ? NSColor.systemYellow : base
         return tint.withAlphaComponent(max(0.05, min(alpha, 1)))
+    }
+}
+
+extension JSONEncoder {
+    /// Stable, readable output, so exported form data diffs cleanly.
+    static var sortedPretty: JSONEncoder {
+        let encoder = JSONEncoder()
+        encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+        return encoder
     }
 }

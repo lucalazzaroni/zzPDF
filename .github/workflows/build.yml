@@ -11,3 +11,5 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build release
         run: swift build -c release
+      - name: Run smoke tests
+        run: ./scripts/run-tests.sh

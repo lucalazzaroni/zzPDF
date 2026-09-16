@@ -1,4 +1,5 @@
 import AppKit
+import CoreImage
 import SwiftUI
 
 final class AppPreferences: ObservableObject {
@@ -16,6 +17,8 @@ final class AppPreferences: ObservableObject {
         static let shapeFillColor = "shapeFillColor"
         static let autoFitFormText = "autoFitFormText"
         static let highlightOpacity = "highlightOpacity"
+        static let annotationAuthor = "annotationAuthor"
+        static let readingMode = "readingMode"
         static let confirmPageDeletion = "confirmPageDeletion"
         static let confirmFlattenedExport = "confirmFlattenedExport"
         static let exportFolderPath = "exportFolderPath"
@@ -40,6 +43,8 @@ final class AppPreferences: ObservableObject {
     @Published var shapeFillColor: Color { didSet { saveColor(shapeFillColor, key: Key.shapeFillColor) } }
     @Published var autoFitFormText: Bool { didSet { defaults.set(autoFitFormText, forKey: Key.autoFitFormText) } }
     @Published var highlightOpacity: Double { didSet { defaults.set(highlightOpacity, forKey: Key.highlightOpacity) } }
+    @Published var annotationAuthor: String { didSet { defaults.set(annotationAuthor, forKey: Key.annotationAuthor) } }
+    @Published var readingMode: ReadingMode { didSet { defaults.set(readingMode.rawValue, forKey: Key.readingMode) } }
     @Published var confirmPageDeletion: Bool { didSet { defaults.set(confirmPageDeletion, forKey: Key.confirmPageDeletion) } }
     @Published var confirmFlattenedExport: Bool { didSet { defaults.set(confirmFlattenedExport, forKey: Key.confirmFlattenedExport) } }
     @Published var exportFolderPath: String { didSet { defaults.set(exportFolderPath, forKey: Key.exportFolderPath) } }
@@ -60,6 +65,8 @@ final class AppPreferences: ObservableObject {
             Key.shapeHasFill: false,
             Key.autoFitFormText: true,
             Key.highlightOpacity: 0.45,
+            Key.annotationAuthor: NSFullUserName(),
+            Key.readingMode: ReadingMode.normal.rawValue,
             Key.confirmPageDeletion: true,
             Key.confirmFlattenedExport: true,
             Key.exportFolderPath: ""
@@ -78,6 +85,8 @@ final class AppPreferences: ObservableObject {
         shapeFillColor = Self.loadColor(defaults: defaults, key: Key.shapeFillColor) ?? .black
         autoFitFormText = defaults.bool(forKey: Key.autoFitFormText)
         highlightOpacity = max(0.05, min(defaults.double(forKey: Key.highlightOpacity), 1))
+        annotationAuthor = defaults.string(forKey: Key.annotationAuthor) ?? NSFullUserName()
+        readingMode = ReadingMode(rawValue: defaults.string(forKey: Key.readingMode) ?? "") ?? .normal
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
@@ -217,6 +226,8 @@ final class AppPreferences: ObservableObject {
         shapeFillColor = .black
         autoFitFormText = true
         highlightOpacity = 0.45
+        annotationAuthor = NSFullUserName()
+        readingMode = .normal
         confirmPageDeletion = true
         confirmFlattenedExport = true
         exportFolderPath = ""
@@ -234,5 +245,53 @@ final class AppPreferences: ObservableObject {
     private static func loadColor(defaults: UserDefaults, key: String) -> Color? {
         guard let components = defaults.array(forKey: key) as? [Double], components.count == 4 else { return nil }
         return Color(.sRGB, red: components[0], green: components[1], blue: components[2], opacity: components[3])
+    }
+}
+
+/// How pages are tinted on screen. This changes nothing in the document: it is a Core
+/// Animation filter over the view, for reading in the dark or on a warm background.
+enum ReadingMode: String, CaseIterable, Identifiable {
+    case normal, night, sepia
+
+    var id: String { rawValue }
+
+    var label: String {
+        switch self {
+        case .normal: "Normal"
+        case .night: "Night"
+        case .sepia: "Sepia"
+        }
+    }
+
+    var symbol: String {
+        switch self {
+        case .normal: "sun.max"
+        case .night: "moon"
+        case .sepia: "book.closed"
+        }
+    }
+
+    /// The filters the page view is composited through.
+    var filters: [CIFilter] {
+        switch self {
+        case .normal:
+            return []
+        case .night:
+            return [CIFilter(name: "CIColorInvert")].compactMap { $0 }
+        case .sepia:
+            let sepia = CIFilter(name: "CISepiaTone")
+            sepia?.setValue(0.55, forKey: kCIInputIntensityKey)
+            return [sepia].compactMap { $0 }
+        }
+    }
+
+    /// Night mode inverts everything the view draws, so the surround has to start white
+    /// to end up dark.
+    var backgroundColor: NSColor {
+        switch self {
+        case .normal: NSColor(calibratedWhite: 0.13, alpha: 1)
+        case .night: NSColor(calibratedWhite: 0.87, alpha: 1)
+        case .sepia: NSColor(calibratedWhite: 0.30, alpha: 1)
+        }
     }
 }

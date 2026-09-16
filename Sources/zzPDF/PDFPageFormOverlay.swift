@@ -56,11 +56,12 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         focus(field)
     }
 
-    func beginInlineEditing(_ annotation: PDFAnnotation, singleLine: Bool) {
-        guard let owner else { return }
+    func beginInlineEditing(_ request: InlineEditorRequest) {
+        guard owner != nil else { return }
+        let annotation = request.annotation
         inlineEditor?.cancel()
         let editor = PDFInlineTextEditor(frame: .zero)
-        editor.prepare(for: annotation, singleLine: singleLine)
+        editor.prepare(for: request)
         editor.onCommit = { [weak self] text in
             self?.inlineEditor = nil
             self?.owner?.workspace?.commitTextReplacement(annotation, text: text)
@@ -98,9 +99,9 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
     }
 
     private func updateInlineEditorFrame() {
-        guard let editor = inlineEditor, let annotation = editor.annotation,
-              let owner, let page else { return }
-        let pdfViewRect = owner.convert(annotation.bounds, from: page).standardized
+        guard let editor = inlineEditor, let owner, let page else { return }
+        let bounds = editor.frameBounds.isEmpty ? (editor.annotation?.bounds ?? .zero) : editor.frameBounds
+        let pdfViewRect = owner.convert(bounds, from: page).standardized
         editor.updateLayout(frame: convert(pdfViewRect, from: owner).standardized)
     }
 
@@ -154,7 +155,48 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
             cancel(field)
             return true
         }
+        if commandSelector == #selector(NSResponder.insertTab(_:)) {
+            return moveFocus(from: field, by: 1)
+        }
+        if commandSelector == #selector(NSResponder.insertBacktab(_:)) {
+            return moveFocus(from: field, by: -1)
+        }
         return false
+    }
+
+    /// Text fields in the order they appear down the page, so Tab walks the form the way
+    /// the reader does rather than in whatever order the annotations were stored.
+    private var orderedTextFields: [PDFOverlayTextField] {
+        formViews
+            .compactMap { $0 as? PDFOverlayTextField }
+            .filter { $0.isEnabled && !$0.isHidden }
+            .sorted { first, second in
+                guard let a = first.annotation?.bounds, let b = second.annotation?.bounds else { return false }
+                if abs(a.maxY - b.maxY) > 4 { return a.maxY > b.maxY }
+                return a.minX < b.minX
+            }
+    }
+
+    @discardableResult
+    private func moveFocus(from field: PDFOverlayTextField, by offset: Int) -> Bool {
+        let fields = orderedTextFields
+        guard let current = fields.firstIndex(of: field) else { return false }
+        let next = current + offset
+        guard fields.indices.contains(next) else {
+            // Past either end of this page, hand over to the page in that direction.
+            return owner?.focusFirstFormField(onPageAfter: page, direction: offset) ?? false
+        }
+        focus(fields[next])
+        return true
+    }
+
+    /// Focuses the first or last field on this page, when Tab arrives from another one.
+    @discardableResult
+    func focusEdgeField(last: Bool) -> Bool {
+        let fields = orderedTextFields
+        guard let field = last ? fields.last : fields.first else { return false }
+        focus(field)
+        return true
     }
 
     @objc private func toggleButton(_ sender: PDFOverlayButton) {

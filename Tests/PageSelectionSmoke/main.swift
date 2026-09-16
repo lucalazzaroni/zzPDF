@@ -27,7 +27,10 @@ struct PageSelectionSmoke {
         workspace.load(makePDF(pages: 6, in: directory))
         view.document = workspace.pdfDocument
         let original = labels(workspace)
-        check(original == ["1", "2", "3", "4", "5", "6"], "The fixture reads \(original)")
+        check(
+            original == (1...6).map { "Pagina \($0)" },
+            "The fixture reads \(original)"
+        )
 
         // Selecting a page replaces the selection; a range extends it.
         workspace.selectPage(1)
@@ -53,7 +56,8 @@ struct PageSelectionSmoke {
         workspace.extendPageSelection(to: 3)
         workspace.duplicateSelectedPages()
         check(
-            labels(workspace) == ["1", "2", "2", "3", "3", "4", "4", "5", "6"],
+            labels(workspace) == ["Pagina 1", "Pagina 2", "Pagina 2", "Pagina 3", "Pagina 3",
+                                  "Pagina 4", "Pagina 4", "Pagina 5", "Pagina 6"],
             "Duplicating the selection produced \(labels(workspace))"
         )
         workspace.undo()
@@ -63,11 +67,11 @@ struct PageSelectionSmoke {
         workspace.selectPage(1)
         workspace.extendPageSelection(to: 3)
         workspace.deleteSelectedPages()
-        check(labels(workspace) == ["1", "5", "6"], "Deleting the selection produced \(labels(workspace))")
+        check(labels(workspace) == ["Pagina 1", "Pagina 5", "Pagina 6"], "Deleting the selection produced \(labels(workspace))")
         workspace.undo()
         check(labels(workspace) == original, "Undoing the deletion left \(labels(workspace))")
         workspace.redo()
-        check(labels(workspace) == ["1", "5", "6"], "Redoing the deletion left \(labels(workspace))")
+        check(labels(workspace) == ["Pagina 1", "Pagina 5", "Pagina 6"], "Redoing the deletion left \(labels(workspace))")
         workspace.undo()
 
         // The document always keeps a page.
@@ -77,7 +81,7 @@ struct PageSelectionSmoke {
 
         // Dragging a thumbnail to a new position reorders, and undo puts it back.
         workspace.reorderPage(from: 0, to: 4)
-        check(labels(workspace) == ["2", "3", "4", "5", "1", "6"], "Reordering produced \(labels(workspace))")
+        check(labels(workspace) == ["Pagina 2", "Pagina 3", "Pagina 4", "Pagina 5", "Pagina 1", "Pagina 6"], "Reordering produced \(labels(workspace))")
         check(workspace.currentPageIndex == 4, "The moved page is not the current one")
         workspace.undo()
         check(labels(workspace) == original, "Undoing the reorder left \(labels(workspace))")
@@ -91,7 +95,7 @@ struct PageSelectionSmoke {
         let extractedLabels = (0..<output.pageCount).map { index in
             (output.page(at: index)?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         }
-        check(extractedLabels == ["2", "5"], "The extracted file holds \(extractedLabels)")
+        check(extractedLabels == ["Pagina 2", "Pagina 5"], "The extracted file holds \(extractedLabels)")
 
         // The annotation list finds what has been added, and hides the redaction backdrop.
         guard let page = workspace.pdfDocument?.page(at: 0) else { fail("The fixture has no page") }
@@ -99,10 +103,13 @@ struct PageSelectionSmoke {
         workspace.addAnnotation(at: CGPoint(x: 60, y: 300), on: page)
         workspace.commitNoteEditing(text: "Da rivedere")
         workspace.activeTool = .editText
-        workspace.beginTextReplacement(at: CGPoint(x: 55, y: 402), on: page)
-        if let replaced = workspace.selectedAnnotation {
-            workspace.commitTextReplacement(replaced, text: "Uno")
+        let textPoint = CGPoint(x: 70, y: 404)
+        guard workspace.replaceableText(at: textPoint, on: page) != nil else {
+            fail("No page text was found at \(textPoint), where the fixture draws its label")
         }
+        workspace.beginTextReplacement(at: textPoint, on: page)
+        guard let replaced = workspace.selectedAnnotation else { fail("The replacement was not started") }
+        workspace.commitTextReplacement(replaced, text: "Uno")
         let entries = workspace.annotationEntries()
         check(entries.count == 2, "The annotation list holds \(entries.count) rows instead of 2")
         check(
@@ -117,6 +124,31 @@ struct PageSelectionSmoke {
             entries.allSatisfy { $0.pageIndex == 0 },
             "The annotation list reports the wrong page"
         )
+
+        // Splitting writes one file per part, covering every page exactly once.
+        workspace.splitEveryPages = 2
+        workspace.splitAtContents = false
+        check(workspace.splitStartIndexes == [0, 2, 4], "The cuts fall at \(workspace.splitStartIndexes)")
+        let splitFolder = directory.appendingPathComponent("split", isDirectory: true)
+        try! FileManager.default.createDirectory(at: splitFolder, withIntermediateDirectories: true)
+        check(workspace.writeSplitParts(into: splitFolder) == 3, "Splitting did not write three files")
+        let parts = ((try? FileManager.default.contentsOfDirectory(atPath: splitFolder.path)) ?? []).sorted()
+        check(parts.count == 3, "The split folder holds \(parts)")
+        var recovered: [String] = []
+        for part in parts {
+            guard let document = PDFDocument(url: splitFolder.appendingPathComponent(part)) else {
+                fail("A split part could not be opened")
+            }
+            check(document.pageCount == 2, "\(part) holds \(document.pageCount) pages instead of 2")
+            for index in 0..<document.pageCount {
+                recovered.append((document.page(at: index)?.string ?? "").trimmingCharacters(in: .whitespacesAndNewlines))
+            }
+        }
+        check(recovered == labels(workspace), "The parts hold \(recovered) instead of \(labels(workspace))")
+
+        // An odd remainder still gets its own part rather than being dropped.
+        workspace.splitEveryPages = 4
+        check(workspace.splitStartIndexes == [0, 4], "A remainder changed the cuts to \(workspace.splitStartIndexes)")
 
         print("Page selection and annotation list smoke test passed.")
     }
@@ -142,7 +174,7 @@ struct PageSelectionSmoke {
         for index in 0..<pages {
             context.beginPDFPage(nil)
             let font = CTFontCreateWithName("Helvetica" as CFString, 18, nil)
-            let attributed = NSAttributedString(string: "\(index + 1)", attributes: [.font: font])
+            let attributed = NSAttributedString(string: "Pagina \(index + 1)", attributes: [.font: font])
             context.textPosition = CGPoint(x: 40, y: 400)
             CTLineDraw(CTLineCreateWithAttributedString(attributed), context)
             context.endPDFPage()

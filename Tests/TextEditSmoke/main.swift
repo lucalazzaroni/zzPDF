@@ -167,10 +167,53 @@ struct TextEditSmoke {
             "The block reads \"\(block.text)\" instead of both body lines"
         )
         check(block.coverBounds.height > 20, "The block cover only spans \(block.coverBounds.height) points")
+        check(block.lines.count == 2, "The block holds \(block.lines.count) lines instead of 2")
+
+        // A block is replaced line by line, so the document's own line spacing survives
+        // instead of being reflowed with the font's.
+        let originalBaselines = block.lines.map(\.baseline)
+        let beforeBlock = page.annotations.count
         workspace.beginTextReplacement(block)
+        check(
+            page.annotations.count == beforeBlock + 4,
+            "Replacing two lines added \(page.annotations.count - beforeBlock) annotations instead of 4"
+        )
         guard let blockText = workspace.selectedAnnotation else { fail("The block replacement was not selected") }
-        workspace.commitTextReplacement(blockText, text: "Prima riga\nSeconda riga")
-        check(blockText.contents == "Prima riga\nSeconda riga", "The block commit stored \"\(blockText.contents ?? "")\"")
+        let blockAnnotations = page.annotations
+            .filter { $0.isSubtype(.freeText) && TextEditMarker.isTextEdit($0) && $0 !== replaced }
+            .sorted { $0.bounds.maxY > $1.bounds.maxY }
+        check(blockAnnotations.count == 2, "The block produced \(blockAnnotations.count) text boxes instead of 2")
+        for (annotation, baseline) in zip(blockAnnotations, originalBaselines) {
+            check(
+                abs((FreeTextLayout.baseline(of: annotation) ?? 0) - baseline) < 0.05,
+                "A replaced line sits on \(FreeTextLayout.baseline(of: annotation) ?? 0) instead of \(baseline)"
+            )
+            check(workspace.linkedCover(for: annotation) != nil, "A replaced line has no cover")
+        }
+
+        let longEnough = "Una prima riga piuttosto lunga da distribuire e poi il resto del testo."
+        workspace.commitTextReplacement(blockText, text: longEnough)
+        let written = blockAnnotations.map { ($0.contents ?? "") }
+        check(
+            written.joined(separator: " ").split(separator: " ") == longEnough.split(separator: " "),
+            "The block was laid out as \(written) and lost or reordered words"
+        )
+        check(!written[0].isEmpty, "The first line of the block came out empty")
+        check(
+            blockAnnotations.allSatisfy { annotation in
+                originalBaselines.contains { abs((FreeTextLayout.baseline(of: annotation) ?? 0) - $0) < 0.05 }
+            },
+            "Committing the block moved a line off its baseline"
+        )
+
+        // Undoing a block takes all four annotations with it, in one step.
+        workspace.undo()
+        check(
+            page.annotations.count == beforeBlock,
+            "Undoing the block left \(page.annotations.count - beforeBlock) annotations behind"
+        )
+        workspace.redo()
+        check(page.annotations.count == beforeBlock + 4, "Redoing the block did not restore all four annotations")
 
         // Saving and reopening keeps both pairs linked.
         let saved = directory.appendingPathComponent("edited.pdf")
@@ -186,7 +229,8 @@ struct TextEditSmoke {
         reopened.load(saved)
         guard let reopenedPage = reopened.pdfDocument?.page(at: 0) else { fail("The saved document could not be reopened") }
         let reopenedTexts = reopenedPage.annotations.filter { $0.isSubtype(.freeText) && TextEditMarker.isTextEdit($0) }
-        check(reopenedTexts.count == 2, "The saved document holds \(reopenedTexts.count) replaced runs instead of 2")
+        // One run for the headline, one for each line of the replaced block.
+        check(reopenedTexts.count == 3, "The saved document holds \(reopenedTexts.count) replaced runs instead of 3")
         for text in reopenedTexts {
             check(reopened.linkedCover(for: text) != nil, "A reopened replacement lost its cover link")
         }

@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarMode: String, CaseIterable, Identifiable {
-    case pages, outline, annotations
+    case pages, outline, annotations, search
 
     var id: String { rawValue }
     var label: String {
@@ -12,6 +12,7 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         case .pages: "Pages"
         case .outline: "Contents"
         case .annotations: "Notes"
+        case .search: "Search"
         }
     }
     var symbol: String {
@@ -19,6 +20,7 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         case .pages: "doc.on.doc"
         case .outline: "list.bullet.indent"
         case .annotations: "bubble.left.and.text.bubble.right"
+        case .search: "magnifyingglass"
         }
     }
 }
@@ -48,8 +50,10 @@ struct PageSidebar: View {
             case .pages: pageList
             case .outline: outlineList
             case .annotations: annotationList
+            case .search: searchList
             }
         }
+        .onReceive(workspace.$searchFocusRequest.dropFirst()) { _ in mode = .search }
         .frame(minWidth: 155, idealWidth: 195, maxWidth: 260)
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -167,6 +171,12 @@ struct PageSidebar: View {
                             Text("\(entry.kind) · page \(entry.pageIndex + 1)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            if let attribution = entry.attribution {
+                                Text(attribution)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 0)
                     }
@@ -175,10 +185,61 @@ struct PageSidebar: View {
                 .buttonStyle(.plain)
                 .contextMenu {
                     Button("Show") { workspace.reveal(entry.annotation) }
+                    if entry.isEditable {
+                        Button("Edit…") { workspace.edit(entry.annotation) }
+                    }
                     Button("Delete", role: .destructive) { workspace.remove(entry.annotation) }
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var searchList: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Match case", isOn: $workspace.searchMatchesCase)
+                Toggle("Whole words", isOn: $workspace.searchWholeWords)
+            }
+            .toggleStyle(.checkbox)
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            Divider()
+
+            if workspace.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                sidebarPlaceholder("Type in the search field to look through the document.")
+            } else if workspace.searchResults.isEmpty {
+                sidebarPlaceholder(workspace.isSearching ? "Searching…" : "No results.")
+            } else {
+                List(Array(workspace.searchResults.enumerated()), id: \.offset) { index, result in
+                    Button {
+                        workspace.showSearchResult(result)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(workspace.searchSnippet(for: result))
+                                .lineLimit(3)
+                                .font(.callout)
+                            Text("Page \(workspace.pageNumber(for: result))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(index == workspace.searchIndex ? Color.accentColor.opacity(0.16) : Color.clear)
+                }
+                .listStyle(.sidebar)
+                if workspace.isSearching {
+                    Text("Searching… \(workspace.searchResults.count) so far")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 6)
+                }
+            }
         }
     }
 
@@ -254,6 +315,11 @@ struct InspectorPanel: View {
     @EnvironmentObject private var preferences: AppPreferences
 
     static let fontFamilies = NSFontManager.shared.availableFontFamilies
+    static let stampFonts = [
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique",
+        "Times-Roman", "Times-Bold", "Times-Italic",
+        "Courier", "Courier-Bold"
+    ]
 
     var body: some View {
         ScrollView {
@@ -429,6 +495,39 @@ struct InspectorPanel: View {
                 }
             }
         }
+    }
+
+    private var signatureSummary: some View {
+        VStack(alignment: .leading, spacing: 3) {
+            Label(
+                workspace.digitalSignatures.count == 1
+                    ? "Digitally signed"
+                    : "\(workspace.digitalSignatures.count) digital signatures",
+                systemImage: "seal"
+            )
+            .font(.callout.weight(.medium))
+            ForEach(workspace.digitalSignatures) { signature in
+                VStack(alignment: .leading, spacing: 1) {
+                    if let signer = signature.signer {
+                        Text(signer).font(.caption)
+                    }
+                    Text(signature.schemeLabel)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                    if let date = signature.signedAt {
+                        Text(date.formatted(date: .abbreviated, time: .shortened))
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                    }
+                }
+                .padding(.leading, 4)
+            }
+            Text("zzPDF does not check signatures. Use a validator to confirm one.")
+                .font(.caption2)
+                .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(.bottom, 2)
     }
 
     private var replacedTextControls: some View {
@@ -622,6 +721,16 @@ struct InspectorPanel: View {
                 Button("Reset") { workspace.resetCurrentCrop() }
             }
             .controlSize(.small)
+            Picker("", selection: Binding(
+                get: { preferences.readingMode },
+                set: { workspace.setReadingMode($0) }
+            )) {
+                ForEach(ReadingMode.allCases) { mode in
+                    Image(systemName: mode.symbol).help(mode.label).tag(mode)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
         }
     }
 
@@ -629,6 +738,9 @@ struct InspectorPanel: View {
         VStack(alignment: .leading, spacing: 9) {
             Text("DOCUMENT")
                 .font(.caption2.weight(.semibold)).foregroundStyle(.secondary)
+            if !workspace.digitalSignatures.isEmpty {
+                signatureSummary
+            }
             Button { workspace.mergePDF() } label: { Label("Merge PDF…", systemImage: "square.stack.3d.up") }
             Button { workspace.importImages() } label: { Label("Add Images…", systemImage: "photo.on.rectangle.angled") }
             Button { workspace.recognizeCurrentPage() } label: { Label("Read Text on This Page…", systemImage: "text.viewfinder") }
@@ -639,6 +751,20 @@ struct InspectorPanel: View {
             Button { workspace.exportFlattened() } label: { Label("Export Flattened…", systemImage: "doc.badge.gearshape") }
             Button { workspace.exportPagesAsImages() } label: { Label("Export Pages as Images…", systemImage: "photo") }
             Button { workspace.exportSmallerCopy() } label: { Label("Export Smaller Copy…", systemImage: "arrow.down.circle") }
+            Button { workspace.beginPageStamp(PageStamper.Options()) } label: {
+                Label("Page Numbers & Headers…", systemImage: "number")
+            }
+            Button { workspace.beginPageStamp(.watermark) } label: {
+                Label("Watermark…", systemImage: "drop")
+            }
+            Button { workspace.beginSplit() } label: { Label("Split Document…", systemImage: "square.split.1x2") }
+            Button { workspace.compareWithAnotherPDF() } label: {
+                Label("Compare with Another PDF…", systemImage: "arrow.left.arrow.right")
+            }
+            if workspace.hasFormFields {
+                Button { workspace.exportFormData() } label: { Label("Export Form Data…", systemImage: "tray.and.arrow.up") }
+                Button { workspace.importFormData() } label: { Label("Fill from Form Data…", systemImage: "tray.and.arrow.down") }
+            }
             Button { workspace.showPasswordExport = true } label: { Label("Password Protect…", systemImage: "lock") }
             if workspace.isPasswordProtected {
                 Button { workspace.removePasswordProtection() } label: {
@@ -883,4 +1009,249 @@ struct PageDragItem: Codable, Transferable {
 
 extension UTType {
     static let zzPDFPageReference = UTType(exportedAs: "it.lucalazzaroni.zzpdf.page-reference")
+}
+
+struct PageStampSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var preview: NSImage?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text(workspace.stampOptions.placement == .center ? "Watermark" : "Header, Footer or Page Number")
+                    .font(.title2.bold())
+                Text("The text becomes part of the page, so it survives every export and stays searchable.")
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            HStack(alignment: .top, spacing: 18) {
+                Form {
+                    TextField("Text", text: $workspace.stampOptions.text, axis: .vertical)
+                        .lineLimit(1...3)
+                    Text(PageStamper.tokenHelp)
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    Picker("Position", selection: $workspace.stampOptions.placement) {
+                        ForEach(PageStamper.Placement.allCases) { placement in
+                            Text(placement.label).tag(placement)
+                        }
+                    }
+                    Picker("Font", selection: $workspace.stampOptions.fontName) {
+                        ForEach(InspectorPanel.stampFonts, id: \.self) { name in
+                            Text(name).tag(name)
+                        }
+                    }
+                    LabeledContent("Size") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.fontSize, in: 6...144)
+                            Text("\(Int(workspace.stampOptions.fontSize)) pt").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Colour") {
+                        ColorPicker("", selection: Binding(
+                            get: { Color(nsColor: workspace.stampOptions.color) },
+                            set: { workspace.stampOptions.color = NSColor($0) }
+                        ), supportsOpacity: false)
+                        .labelsHidden()
+                    }
+                    LabeledContent("Opacity") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.opacity, in: 0.05...1)
+                            Text("\(Int(workspace.stampOptions.opacity * 100))%").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Rotation") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.rotation, in: -90...90, step: 1)
+                            Text("\(Int(workspace.stampOptions.rotation))°").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    LabeledContent("Margin") {
+                        HStack {
+                            Slider(value: $workspace.stampOptions.margin, in: 0...120)
+                            Text("\(Int(workspace.stampOptions.margin)) pt").monospacedDigit().frame(width: 48)
+                        }
+                    }
+                    if workspace.stampOptions.text.contains("{bates}") {
+                        TextField("Bates prefix", text: $workspace.stampOptions.batesPrefix)
+                        Stepper("Start at \(workspace.stampOptions.batesStart)", value: $workspace.stampOptions.batesStart, in: 0...9_999_999)
+                        Stepper("\(workspace.stampOptions.batesDigits) digits", value: $workspace.stampOptions.batesDigits, in: 1...12)
+                    }
+                    if workspace.selectedPageIndexes.count > 1 {
+                        Toggle("Only the \(workspace.selectedPageIndexes.count) selected pages", isOn: $workspace.stampAppliesToSelectionOnly)
+                    }
+                }
+                .formStyle(.grouped)
+                .frame(width: 360)
+
+                VStack(spacing: 6) {
+                    Group {
+                        if let preview {
+                            Image(nsImage: preview)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            RoundedRectangle(cornerRadius: 4).fill(.quaternary)
+                        }
+                    }
+                    .frame(width: 190, height: 250)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay {
+                        RoundedRectangle(cornerRadius: 4).stroke(.quaternary)
+                    }
+                    Text("Preview of page \((workspace.stampTargetIndexes.first ?? 0) + 1)")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Add to \(workspace.stampTargetIndexes.count) Page\(workspace.stampTargetIndexes.count == 1 ? "" : "s")") {
+                    workspace.applyPageStamp()
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(workspace.stampOptions.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 640)
+        .task(id: previewKey) { refreshPreview() }
+    }
+
+    /// Everything the preview depends on, so it is redrawn when any of it changes.
+    private var previewKey: String {
+        let options = workspace.stampOptions
+        return [
+            options.text, options.placement.rawValue, options.fontName,
+            "\(options.fontSize)", "\(options.opacity)", "\(options.rotation)",
+            "\(options.margin)", options.color.description, options.batesPrefix,
+            "\(options.batesStart)", "\(options.batesDigits)", "\(workspace.stampAppliesToSelectionOnly)"
+        ].joined(separator: "|")
+    }
+
+    private func refreshPreview() {
+        preview = workspace.stampPreview(size: CGSize(width: 380, height: 500))
+    }
+}
+
+struct SplitSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Split Document").font(.title2.bold())
+                Text("The original file is left alone; each part is written as its own PDF.")
+                    .foregroundStyle(.secondary)
+            }
+            Form {
+                if workspace.outlineRoot != nil {
+                    Picker("Split", selection: $workspace.splitAtContents) {
+                        Text("Every few pages").tag(false)
+                        Text("At each contents entry").tag(true)
+                    }
+                    .pickerStyle(.radioGroup)
+                }
+                if !workspace.splitAtContents {
+                    Stepper(
+                        "Every \(workspace.splitEveryPages) page\(workspace.splitEveryPages == 1 ? "" : "s")",
+                        value: $workspace.splitEveryPages,
+                        in: 1...max(1, workspace.pageCount)
+                    )
+                }
+                LabeledContent("Result") {
+                    Text("\(workspace.splitPartCount) file\(workspace.splitPartCount == 1 ? "" : "s") from \(workspace.pageCount) pages")
+                        .foregroundStyle(.secondary)
+                }
+            }
+            .formStyle(.grouped)
+            HStack {
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Choose Folder…") { workspace.splitDocument() }
+                    .keyboardShortcut(.defaultAction)
+                    .disabled(workspace.splitPartCount < 2)
+            }
+        }
+        .padding(20)
+        .frame(width: 430)
+    }
+}
+
+struct ComparisonSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var selected: Int?
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Compared with \(workspace.comparedName)").font(.title2.bold())
+                if workspace.isComparing {
+                    Text("Comparing…").foregroundStyle(.secondary)
+                } else {
+                    Text(workspace.comparisonChangeCount == 0
+                         ? "The two documents match."
+                         : "\(workspace.comparisonChangeCount) of \(workspace.comparison.count) pages differ. Changes are marked in red.")
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack(alignment: .top, spacing: 16) {
+                List(workspace.comparison, selection: $selected) { result in
+                    HStack(spacing: 7) {
+                        Image(systemName: result.change.symbol)
+                            .foregroundStyle(result.change.isChange ? Color.red : Color.secondary)
+                            .frame(width: 16)
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text("Page \(result.pageNumber)")
+                            Text(result.change.label)
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        Spacer(minLength: 0)
+                    }
+                    .tag(result.pageNumber)
+                }
+                .frame(width: 210, height: 380)
+
+                VStack(spacing: 6) {
+                    Group {
+                        if let page = selected ?? workspace.comparison.first(where: { $0.change.isChange })?.pageNumber,
+                           let image = workspace.comparisonImage(forPageNumber: page) {
+                            Image(nsImage: image)
+                                .resizable()
+                                .scaledToFit()
+                        } else {
+                            RoundedRectangle(cornerRadius: 4).fill(.quaternary)
+                        }
+                    }
+                    .frame(width: 320, height: 380)
+                    .background(.white)
+                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                    .overlay { RoundedRectangle(cornerRadius: 4).stroke(.quaternary) }
+                    Text("Red marks what the other version changed.")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+
+            HStack {
+                Spacer()
+                Button("Done") { dismiss() }
+                    .keyboardShortcut(.defaultAction)
+            }
+        }
+        .padding(20)
+        .frame(width: 620)
+    }
 }

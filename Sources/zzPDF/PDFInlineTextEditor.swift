@@ -46,11 +46,15 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
 
     override var acceptsFirstResponder: Bool { true }
 
-    func prepare(for annotation: PDFAnnotation, singleLine: Bool) {
+    private(set) var frameBounds: CGRect = .zero
+
+    func prepare(for request: InlineEditorRequest) {
+        let annotation = request.annotation
         self.annotation = annotation
-        self.singleLine = singleLine
+        self.singleLine = request.singleLine
+        self.frameBounds = request.frameBounds
         pdfFont = annotation.font ?? .systemFont(ofSize: 12)
-        textView.string = annotation.contents ?? ""
+        textView.string = request.seedText
         textView.alignment = annotation.alignment
         textView.textColor = annotation.fontColor ?? .black
         textView.insertionPointColor = annotation.fontColor ?? .black
@@ -166,4 +170,15 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
         }
         return super.performKeyEquivalent(with: event)
     }
+}
+
+/// What the in-place editor needs to open: the annotation it writes back to, the text it
+/// starts with, and the box it covers. For a replaced block those differ — the editor spans
+/// every line while writing back through the first one.
+struct InlineEditorRequest {
+    let annotation: PDFAnnotation
+    let page: PDFPage
+    let singleLine: Bool
+    let seedText: String
+    let frameBounds: CGRect
 }

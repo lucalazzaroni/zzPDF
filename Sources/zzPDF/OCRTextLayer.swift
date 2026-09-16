@@ -1,6 +1,6 @@
 import AppKit
 import PDFKit
-@preconcurrency import Vision
+import Vision
 
 /// Turns scanned pages into searchable ones. PDFKit cannot add text to an existing page,
 /// so a recognized page is rebuilt: the rendered image goes down first, then the
