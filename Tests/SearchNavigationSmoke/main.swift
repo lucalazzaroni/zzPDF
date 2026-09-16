@@ -46,6 +46,7 @@ struct SearchNavigationSmoke {
 
         workspace.searchText = "needle"
         workspace.submitSearch(direction: 1)
+        workspace.waitForSearch()
         guard workspace.searchResults.count == 3,
               workspace.searchIndex == 0,
               workspace.currentPageIndex == 0 else {

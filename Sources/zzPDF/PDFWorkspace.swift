@@ -124,7 +124,9 @@ private struct PDFEditAction {
 
 @MainActor
 final class PDFWorkspace: ObservableObject {
-    @Published var pdfDocument: PDFDocument?
+    @Published var pdfDocument: PDFDocument? {
+        didSet { observeSearch(in: pdfDocument) }
+    }
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
     @Published var selectedPageIndexes: Set<Int> = [0]
@@ -150,6 +152,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var searchResults: [PDFSelection] = []
     @Published var searchIndex = 0
     @Published var searchFocusRequest = 0
+    @Published private(set) var isSearching = false
+    @Published var searchMatchesCase = false { didSet { rerunSearchIfNeeded() } }
+    @Published var searchWholeWords = false { didSet { rerunSearchIfNeeded() } }
     @Published var sidebarVisible = true { didSet { preferences.sidebarVisible = sidebarVisible } }
     @Published var inspectorVisible = true { didSet { preferences.inspectorVisible = inspectorVisible } }
     @Published var showSignaturePad = false
@@ -207,6 +212,9 @@ final class PDFWorkspace: ObservableObject {
     private var restoringViewState = false
     private var recoveryIdentifier = UUID()
     private var temporaryAutosaveWorkItem: DispatchWorkItem?
+    private var searchObservers: [NSObjectProtocol] = []
+    private var searchMatchCounts: [ObjectIdentifier: Int] = [:]
+    private var searchSnippets: [String] = []
 
     weak var pdfView: InteractivePDFView?
 
@@ -576,6 +584,18 @@ final class PDFWorkspace: ObservableObject {
         textAnnotation(forCover: annotation) != nil
     }
 
+    /// Opens whichever editor suits the annotation, from the sidebar list.
+    func edit(_ annotation: PDFAnnotation) {
+        reveal(annotation)
+        if annotation.isSubtype(.text) {
+            beginEditingSelectedNote()
+        } else if annotation.isSubtype(.freeText) {
+            beginInlineTextEditing(annotation)
+        } else {
+            statusMessage = "\(AnnotationEntry(annotation: annotation, pageIndex: currentPageIndex).kind) has no text to edit"
+        }
+    }
+
     func reveal(_ annotation: PDFAnnotation) {
         guard let page = annotation.page, let document = pdfDocument else { return }
         currentPageIndex = document.index(for: page)
@@ -891,6 +911,7 @@ final class PDFWorkspace: ObservableObject {
             annotation.color = kind == .highlight
                 ? nsAnnotationColor.highlightTint(alpha: preferences.highlightOpacity)
                 : nsAnnotationColor
+            sign(annotation)
             page.addAnnotation(annotation)
             additions.append((page, annotation))
         }
@@ -963,6 +984,7 @@ final class PDFWorkspace: ObservableObject {
         }
         if let annotation {
             let wasDirty = isDirty
+            sign(annotation)
             page.addAnnotation(annotation)
             selectAnnotation(annotation)
             changed("Annotation added")
@@ -984,6 +1006,20 @@ final class PDFWorkspace: ObservableObject {
                 })
             }
         }
+    }
+
+    /// Stamps the author and the time onto an annotation, the way every other PDF
+    /// application does, so a reader can tell who left what and when.
+    ///
+    /// Replaced page text is the one exception: its two annotations are paired through
+    /// the author field, which is the only per-annotation string PDFKit writes back out,
+    /// so they keep carrying their pair identifier instead of a name.
+    func sign(_ annotation: PDFAnnotation) {
+        annotation.modificationDate = Date()
+        guard !TextEditMarker.isTextEdit(annotation) else { return }
+        let author = preferences.annotationAuthor.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !author.isEmpty else { return }
+        annotation.userName = author
     }
 
     private func normalizedBounds(from points: [CGPoint], fallback: CGPoint, size: CGSize) -> CGRect {
@@ -1036,6 +1072,7 @@ final class PDFWorkspace: ObservableObject {
         if closed, let first = points.first { vertices.append(first) }
         guard let annotation = makeInkAnnotation(points: vertices, color: nsAnnotationColor, width: lineWidth) else { return }
         let wasDirty = isDirty
+        sign(annotation)
         page.addAnnotation(annotation)
         selectAnnotation(annotation)
         registerEdit(wasDirtyBefore: wasDirty, undo: {
@@ -1880,35 +1917,172 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.needsDisplay = true
     }
 
+    /// PDFKit reports matches as it finds them, one notification per hit, and one more
+    /// when the sweep is over.
+    private func observeSearch(in document: PDFDocument?) {
+        for token in searchObservers { NotificationCenter.default.removeObserver(token) }
+        searchObservers = []
+        isSearching = false
+        guard let document else { return }
+        let center = NotificationCenter.default
+        searchObservers.append(
+            center.addObserver(forName: .PDFDocumentDidFindMatch, object: document, queue: .main) { [weak self] notification in
+                MainActor.assumeIsolated {
+                    guard let selection = notification.userInfo?["PDFDocumentFoundSelection"] as? PDFSelection else { return }
+                    self?.collectSearchMatch(selection)
+                }
+            }
+        )
+        searchObservers.append(
+            center.addObserver(forName: .PDFDocumentDidEndFind, object: document, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.finishSearch() }
+            }
+        )
+    }
+
+    var searchOptions: NSString.CompareOptions {
+        var options: NSString.CompareOptions = []
+        if !searchMatchesCase { options.insert(.caseInsensitive) }
+        return options
+    }
+
+    /// Searching a long document takes long enough to freeze the window, so PDFKit runs it
+    /// on its own and reports back as it goes.
     func updateSearch() {
         guard let document = pdfDocument else { return }
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         activeSearchQuery = query
-        searchResults = query.isEmpty ? [] : document.findString(query, withOptions: .caseInsensitive)
+        document.cancelFindString()
+        searchResults = []
+        searchSnippets = []
+        searchMatchCounts = [:]
         searchIndex = 0
-        if searchResults.isEmpty {
-            pdfView?.clearSelection()
-        } else {
+        pdfView?.clearSelection()
+        guard !query.isEmpty else {
+            isSearching = false
+            statusMessage = "\(pageCount) pages"
+            return
+        }
+        isSearching = true
+        statusMessage = "Searching for \u{201C}\(query)\u{201D}…"
+        document.beginFindString(query, withOptions: searchOptions)
+    }
+
+    private func rerunSearchIfNeeded() {
+        guard !activeSearchQuery.isEmpty else { return }
+        updateSearch()
+    }
+
+    /// Called for each match PDFKit turns up while a search runs. Matches arrive in
+    /// document order, so counting them per page tells us which occurrence of the query
+    /// this one is, which is what makes a whole-word test and a snippet possible: a
+    /// PDFSelection knows its page and its rectangle, but not where it sits in the text.
+    func collectSearchMatch(_ selection: PDFSelection) {
+        guard let page = selection.pages.first else { return }
+        let key = ObjectIdentifier(page)
+        let occurrence = searchMatchCounts[key, default: 0]
+        searchMatchCounts[key] = occurrence + 1
+        let range = characterRange(ofOccurrence: occurrence, on: page)
+        if searchWholeWords, let range, let text = page.string as NSString? {
+            guard isWordBoundary(text, around: range) else { return }
+        }
+        searchResults.append(selection)
+        searchSnippets.append(snippet(for: range, on: page, fallback: selection.string ?? ""))
+        if searchResults.count == 1 {
+            searchIndex = 0
             revealSearchResult(at: 0)
         }
-        statusMessage = query.isEmpty ? "\(pageCount) pages" : "\(searchResults.count) results"
+    }
+
+    func finishSearch() {
+        isSearching = false
+        statusMessage = searchResults.isEmpty
+            ? "No results for \u{201C}\(activeSearchQuery)\u{201D}"
+            : "\(searchResults.count) result\(searchResults.count == 1 ? "" : "s")"
+    }
+
+    private func characterRange(ofOccurrence occurrence: Int, on page: PDFPage) -> NSRange? {
+        guard !activeSearchQuery.isEmpty, let pageText = page.string else { return nil }
+        let text = pageText as NSString
+        let options: NSString.CompareOptions = searchMatchesCase ? [] : [.caseInsensitive]
+        var location = 0
+        var seen = 0
+        while location < text.length {
+            let found = text.range(
+                of: activeSearchQuery,
+                options: options,
+                range: NSRange(location: location, length: text.length - location)
+            )
+            guard found.location != NSNotFound else { return nil }
+            if seen == occurrence { return found }
+            seen += 1
+            location = found.location + max(1, found.length)
+        }
+        return nil
+    }
+
+    private func isWordBoundary(_ text: NSString, around range: NSRange) -> Bool {
+        func isLetter(at index: Int) -> Bool {
+            guard index >= 0, index < text.length else { return false }
+            let character = text.substring(with: NSRange(location: index, length: 1))
+            guard let scalar = character.unicodeScalars.first else { return false }
+            return CharacterSet.alphanumerics.contains(scalar)
+        }
+        return !isLetter(at: range.location - 1) && !isLetter(at: range.location + range.length)
+    }
+
+    /// A short piece of the page around a match, for the results list.
+    private func snippet(for range: NSRange?, on page: PDFPage, fallback: String) -> String {
+        guard let range, let pageText = page.string else { return fallback }
+        let text = pageText as NSString
+        let start = max(0, range.location - 32)
+        let end = min(text.length, range.location + range.length + 32)
+        var snippet = text.substring(with: NSRange(location: start, length: end - start))
+        snippet = snippet.replacingOccurrences(of: "\n", with: " ")
+        if start > 0 { snippet = "\u{2026}" + snippet }
+        if end < text.length { snippet += "\u{2026}" }
+        return snippet.trimmingCharacters(in: .whitespaces)
+    }
+
+    func searchSnippet(for selection: PDFSelection) -> String {
+        guard let index = searchResults.firstIndex(of: selection), index < searchSnippets.count else {
+            return selection.string ?? ""
+        }
+        return searchSnippets[index]
+    }
+
+    func pageNumber(for selection: PDFSelection) -> Int {
+        guard let page = selection.pages.first, let document = pdfDocument else { return 0 }
+        return document.index(for: page) + 1
+    }
+
+    func showSearchResult(_ selection: PDFSelection) {
+        guard let index = searchResults.firstIndex(of: selection) else { return }
+        searchIndex = index
+        revealSearchResult(at: index)
     }
 
     func submitSearch(direction: Int) {
         let query = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
-        if query != activeSearchQuery {
+        guard query == activeSearchQuery else {
             updateSearch()
-            if direction < 0, searchResults.count > 1 {
-                searchIndex = searchResults.count - 1
-                revealSearchResult(at: searchIndex)
-            }
             return
         }
         nextSearchResult(direction: direction)
     }
 
     func focusSearch() {
+        sidebarVisible = true
         searchFocusRequest += 1
+    }
+
+    /// Blocks until the running search finishes, for tests and for anything that needs the
+    /// full result set rather than the matches found so far.
+    func waitForSearch(timeout: TimeInterval = 10) {
+        let deadline = Date().addingTimeInterval(timeout)
+        while isSearching, Date() < deadline {
+            RunLoop.current.run(mode: .default, before: Date().addingTimeInterval(0.01))
+        }
     }
 
     func nextSearchResult(direction: Int) {
@@ -2478,6 +2652,27 @@ struct AnnotationEntry: Identifiable {
         let contents = (annotation.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         guard !contents.isEmpty, contents != RedactionFlattener.marker else { return kind }
         return contents.replacingOccurrences(of: "\n", with: " ")
+    }
+
+    /// Who left it and when, when the annotation says so. Replaced text carries its pair
+    /// identifier in the author field, so that one is never shown as a name.
+    var attribution: String? {
+        var parts: [String] = []
+        if let author = annotation.userName?.trimmingCharacters(in: .whitespacesAndNewlines),
+           !author.isEmpty, !TextEditMarker.isTextEdit(annotation) {
+            parts.append(author)
+        }
+        if let date = annotation.modificationDate {
+            let formatter = DateFormatter()
+            formatter.dateStyle = .short
+            formatter.timeStyle = .short
+            parts.append(formatter.string(from: date))
+        }
+        return parts.isEmpty ? nil : parts.joined(separator: " · ")
+    }
+
+    var isEditable: Bool {
+        annotation.isSubtype(.text) || annotation.isSubtype(.freeText)
     }
 
     var symbol: String {

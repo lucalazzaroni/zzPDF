@@ -408,6 +408,9 @@ struct SearchField: View {
                 onSubmit: workspace.submitSearch
             )
             if !workspace.searchText.isEmpty {
+                if workspace.isSearching {
+                    ProgressView().controlSize(.mini).scaleEffect(0.6).frame(width: 12, height: 12)
+                }
                 Text("\(workspace.searchResults.isEmpty ? 0 : workspace.searchIndex + 1)/\(workspace.searchResults.count)")
                     .font(.caption2).foregroundStyle(.secondary)
                 Button { workspace.nextSearchResult(direction: -1) } label: { Image(systemName: "chevron.up") }

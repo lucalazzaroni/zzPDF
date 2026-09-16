@@ -4,7 +4,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 enum SidebarMode: String, CaseIterable, Identifiable {
-    case pages, outline, annotations
+    case pages, outline, annotations, search
 
     var id: String { rawValue }
     var label: String {
@@ -12,6 +12,7 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         case .pages: "Pages"
         case .outline: "Contents"
         case .annotations: "Notes"
+        case .search: "Search"
         }
     }
     var symbol: String {
@@ -19,6 +20,7 @@ enum SidebarMode: String, CaseIterable, Identifiable {
         case .pages: "doc.on.doc"
         case .outline: "list.bullet.indent"
         case .annotations: "bubble.left.and.text.bubble.right"
+        case .search: "magnifyingglass"
         }
     }
 }
@@ -48,8 +50,10 @@ struct PageSidebar: View {
             case .pages: pageList
             case .outline: outlineList
             case .annotations: annotationList
+            case .search: searchList
             }
         }
+        .onReceive(workspace.$searchFocusRequest.dropFirst()) { _ in mode = .search }
         .frame(minWidth: 155, idealWidth: 195, maxWidth: 260)
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -167,6 +171,12 @@ struct PageSidebar: View {
                             Text("\(entry.kind) · page \(entry.pageIndex + 1)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
+                            if let attribution = entry.attribution {
+                                Text(attribution)
+                                    .font(.caption2)
+                                    .foregroundStyle(.tertiary)
+                                    .lineLimit(1)
+                            }
                         }
                         Spacer(minLength: 0)
                     }
@@ -175,10 +185,61 @@ struct PageSidebar: View {
                 .buttonStyle(.plain)
                 .contextMenu {
                     Button("Show") { workspace.reveal(entry.annotation) }
+                    if entry.isEditable {
+                        Button("Edit…") { workspace.edit(entry.annotation) }
+                    }
                     Button("Delete", role: .destructive) { workspace.remove(entry.annotation) }
                 }
             }
             .listStyle(.sidebar)
+        }
+    }
+
+    @ViewBuilder
+    private var searchList: some View {
+        VStack(spacing: 0) {
+            VStack(alignment: .leading, spacing: 6) {
+                Toggle("Match case", isOn: $workspace.searchMatchesCase)
+                Toggle("Whole words", isOn: $workspace.searchWholeWords)
+            }
+            .toggleStyle(.checkbox)
+            .font(.callout)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, 12)
+            .padding(.bottom, 6)
+            Divider()
+
+            if workspace.searchText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                sidebarPlaceholder("Type in the search field to look through the document.")
+            } else if workspace.searchResults.isEmpty {
+                sidebarPlaceholder(workspace.isSearching ? "Searching…" : "No results.")
+            } else {
+                List(Array(workspace.searchResults.enumerated()), id: \.offset) { index, result in
+                    Button {
+                        workspace.showSearchResult(result)
+                    } label: {
+                        VStack(alignment: .leading, spacing: 1) {
+                            Text(workspace.searchSnippet(for: result))
+                                .lineLimit(3)
+                                .font(.callout)
+                            Text("Page \(workspace.pageNumber(for: result))")
+                                .font(.caption2)
+                                .foregroundStyle(.secondary)
+                        }
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .listRowBackground(index == workspace.searchIndex ? Color.accentColor.opacity(0.16) : Color.clear)
+                }
+                .listStyle(.sidebar)
+                if workspace.isSearching {
+                    Text("Searching… \(workspace.searchResults.count) so far")
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .padding(.bottom, 6)
+                }
+            }
         }
     }
 

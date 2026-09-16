@@ -16,6 +16,7 @@ final class AppPreferences: ObservableObject {
         static let shapeFillColor = "shapeFillColor"
         static let autoFitFormText = "autoFitFormText"
         static let highlightOpacity = "highlightOpacity"
+        static let annotationAuthor = "annotationAuthor"
         static let confirmPageDeletion = "confirmPageDeletion"
         static let confirmFlattenedExport = "confirmFlattenedExport"
         static let exportFolderPath = "exportFolderPath"
@@ -40,6 +41,7 @@ final class AppPreferences: ObservableObject {
     @Published var shapeFillColor: Color { didSet { saveColor(shapeFillColor, key: Key.shapeFillColor) } }
     @Published var autoFitFormText: Bool { didSet { defaults.set(autoFitFormText, forKey: Key.autoFitFormText) } }
     @Published var highlightOpacity: Double { didSet { defaults.set(highlightOpacity, forKey: Key.highlightOpacity) } }
+    @Published var annotationAuthor: String { didSet { defaults.set(annotationAuthor, forKey: Key.annotationAuthor) } }
     @Published var confirmPageDeletion: Bool { didSet { defaults.set(confirmPageDeletion, forKey: Key.confirmPageDeletion) } }
     @Published var confirmFlattenedExport: Bool { didSet { defaults.set(confirmFlattenedExport, forKey: Key.confirmFlattenedExport) } }
     @Published var exportFolderPath: String { didSet { defaults.set(exportFolderPath, forKey: Key.exportFolderPath) } }
@@ -60,6 +62,7 @@ final class AppPreferences: ObservableObject {
             Key.shapeHasFill: false,
             Key.autoFitFormText: true,
             Key.highlightOpacity: 0.45,
+            Key.annotationAuthor: NSFullUserName(),
             Key.confirmPageDeletion: true,
             Key.confirmFlattenedExport: true,
             Key.exportFolderPath: ""
@@ -78,6 +81,7 @@ final class AppPreferences: ObservableObject {
         shapeFillColor = Self.loadColor(defaults: defaults, key: Key.shapeFillColor) ?? .black
         autoFitFormText = defaults.bool(forKey: Key.autoFitFormText)
         highlightOpacity = max(0.05, min(defaults.double(forKey: Key.highlightOpacity), 1))
+        annotationAuthor = defaults.string(forKey: Key.annotationAuthor) ?? NSFullUserName()
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
@@ -217,6 +221,7 @@ final class AppPreferences: ObservableObject {
         shapeFillColor = .black
         autoFitFormText = true
         highlightOpacity = 0.45
+        annotationAuthor = NSFullUserName()
         confirmPageDeletion = true
         confirmFlattenedExport = true
         exportFolderPath = ""

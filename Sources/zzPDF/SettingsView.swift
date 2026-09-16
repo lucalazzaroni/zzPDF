@@ -91,6 +91,11 @@ struct SettingsView: View {
                 }
             }
             Section("Markup") {
+                LabeledContent("Author") {
+                    TextField("", text: $preferences.annotationAuthor)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: 250)
+                }
                 LabeledContent("Highlight strength") {
                     HStack {
                         Slider(value: $preferences.highlightOpacity, in: 0.1...1)
