@@ -281,9 +281,10 @@ struct TextEditSmoke {
         check(clickWorkspace.linkedCover(for: clicked) != nil, "The clicked replacement has no cover")
         if let editor = clickView.activeInlineEditor {
             check(!clicked.shouldDisplay, "The annotation stayed visible behind its own editor")
+            editor.setText("Scritto nell'editor")
             editor.commit()
             check(clicked.shouldDisplay, "Committing the editor left the replacement hidden")
-            check(clicked.contents == headline, "The editor committed \"\(clicked.contents ?? "")\"")
+            check(clicked.contents == "Scritto nell'editor", "The editor committed \"\(clicked.contents ?? "")\"")
             check(clickWorkspace.isDirty, "The editor commit did not mark the document as edited")
             clickWorkspace.undo()
             check(
@@ -327,6 +328,61 @@ struct TextEditSmoke {
                 "Discarding the zoom \(zoom) edit left \(clickPage.annotations.count) annotations"
             )
         }
+
+        // Clicking again inside an open editor moves the caret. It must not take first
+        // responder away from the text view, which would end the edit and immediately
+        // start another one: the line came back replaced by a copy of itself, drawn over
+        // the original, and Escape then had a second edit to discard before it could
+        // reach the Select tool.
+        clickWorkspace.activateTool(.editText)
+        clickView.scaleFactor = 1
+        clickView.layoutDocumentView()
+        window.makeKeyAndOrderFront(nil)
+        guard let firstDown = mouseEvent(.leftMouseDown, at: windowPoint, in: window),
+              let firstUp = mouseEvent(.leftMouseUp, at: windowPoint, in: window),
+              let secondDown = mouseEvent(.leftMouseDown, at: windowPoint, in: window),
+              let secondUp = mouseEvent(.leftMouseUp, at: windowPoint, in: window) else {
+            fail("The synthetic clicks could not be created")
+        }
+        clickView.mouseDown(with: firstDown)
+        clickView.mouseUp(with: firstUp)
+        guard let editing = clickWorkspace.selectedAnnotation else { fail("The first click started no edit") }
+        let openCount = clickPage.annotations.count
+        let statusWhileEditing = clickWorkspace.statusMessage
+
+        clickView.mouseDown(with: secondDown)
+        clickView.mouseUp(with: secondUp)
+        check(
+            clickWorkspace.selectedAnnotation === editing,
+            "Clicking again inside the editor started a second edit"
+        )
+        check(
+            clickPage.annotations.count == openCount,
+            "Clicking again changed the page from \(openCount) to \(clickPage.annotations.count) annotations"
+        )
+        check(
+            clickWorkspace.statusMessage == statusWhileEditing,
+            "Clicking again ended the edit: \"\(clickWorkspace.statusMessage)\""
+        )
+        if clickView.activeInlineEditor == nil { fail("Clicking again closed the editor") }
+
+        clickWorkspace.activateSelectTool()
+        check(clickPage.annotations.isEmpty, "Escape left \(clickPage.annotations.count) annotations behind")
+        check(!clickWorkspace.isDirty, "Escape left the document marked as edited")
+        check(clickWorkspace.activeTool == .editText, "The first Escape already left the Edit Text tool")
+        clickWorkspace.activateSelectTool()
+        check(clickWorkspace.activeTool == .select, "The second Escape did not return to Select")
+
+        // Opening a line and leaving it without typing leaves the page exactly as it was.
+        clickWorkspace.activateTool(.editText)
+        clickWorkspace.beginTextReplacement(at: pagePoint, on: clickPage)
+        guard let untouched = clickWorkspace.selectedAnnotation else { fail("No replacement was started") }
+        clickWorkspace.commitTextReplacement(untouched, text: headline)
+        check(
+            clickPage.annotations.isEmpty,
+            "Committing an unchanged line left \(clickPage.annotations.count) annotations on the page"
+        )
+        check(!clickWorkspace.isDirty, "Committing an unchanged line marked the document as edited")
 
         // Escape discards the edit and leaves the tool where it was; a second Escape is
         // what returns to Select. The key is sent for real, because which of the editor and

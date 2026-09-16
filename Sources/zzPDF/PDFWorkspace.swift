@@ -1905,6 +1905,20 @@ final class PDFWorkspace: ObservableObject {
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         if session.isNew {
+            // Opening a line and leaving it alone must not replace it with a copy of
+            // itself: clicking away without typing leaves the page as it was.
+            guard text != session.seedText else {
+                for annotation in annotations { page.removeAnnotation(annotation) }
+                for cover in covers { page.removeAnnotation(cover) }
+                for annotation in annotations { unlink(text: annotation) }
+                selectedAnnotation = nil
+                isDirty = session.wasDirtyBefore
+                statusMessage = "Text left unchanged"
+                pdfView?.needsDisplay = true
+                pdfView?.refreshInteractionAppearance()
+                objectWillChange.send()
+                return
+            }
             registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
                 for annotation in annotations { page.removeAnnotation(annotation) }
                 for cover in covers { page.removeAnnotation(cover) }

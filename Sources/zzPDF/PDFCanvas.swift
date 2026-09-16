@@ -430,8 +430,17 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     override func mouseDown(with event: NSEvent) {
         guard let workspace else { return }
-        window?.makeFirstResponder(self)
         let viewPoint = convert(event.locationInWindow, from: nil)
+
+        // A click inside the open editor belongs to the text being typed. Taking first
+        // responder here, as every other click does, would end that edit and start another
+        // one, so the click is handed to the editor instead.
+        if let editor = activeInlineEditor, inlineEditorContains(viewPoint) {
+            editor.handleClick(event)
+            return
+        }
+
+        window?.makeFirstResponder(self)
 
         if let selected = workspace.selectedAnnotation,
            let page = selected.page,

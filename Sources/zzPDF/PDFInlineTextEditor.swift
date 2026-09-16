@@ -72,6 +72,32 @@ final class PDFInlineTextEditor: NSView, NSTextViewDelegate {
         applyAppearance()
     }
 
+    /// Takes a click the page view received on the editor's behalf, so clicking inside the
+    /// text being edited moves the caret instead of ending the edit.
+    ///
+    /// The caret is placed directly rather than by forwarding the event: NSTextView's own
+    /// mouse handling runs a tracking loop until the button comes back up, which is not
+    /// something to start from another view's event.
+    func handleClick(_ event: NSEvent) {
+        guard !didFinish else { return }
+        if window?.firstResponder !== textView {
+            window?.makeFirstResponder(textView)
+        }
+        let point = textView.convert(event.locationInWindow, from: nil)
+        let index = textView.characterIndexForInsertion(at: point)
+        let length = (textView.string as NSString).length
+        textView.setSelectedRange(NSRange(location: min(index, length), length: 0))
+    }
+
+    /// Replaces what the editor holds, following the same path as typing it.
+    func setText(_ text: String) {
+        guard !didFinish else { return }
+        textView.string = text
+        if let font = onTextChange?(text) { pdfFont = font }
+        applyAppearance()
+        onLayoutChange?()
+    }
+
     func focus() {
         window?.makeFirstResponder(textView)
         textView.setSelectedRange(NSRange(location: 0, length: (textView.string as NSString).length))
