@@ -114,7 +114,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     private var annotationDidChange = false
     private var pageOverlays: [ObjectIdentifier: PDFPageFormOverlay] = [:]
     private var requestedEditor: (PDFAnnotation, PDFPage)?
-    private var requestedInlineEditor: (annotation: PDFAnnotation, page: PDFPage, singleLine: Bool)?
+    private var requestedInlineEditor: InlineEditorRequest?
     private var polygonPoints: [CGPoint] = []
     private weak var polygonPage: PDFPage?
     private var hoveredTextBounds: CGRect?
@@ -333,12 +333,24 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         }
     }
 
-    func beginInlineTextEditing(_ annotation: PDFAnnotation, on page: PDFPage, singleLine: Bool) {
-        let id = ObjectIdentifier(page)
-        if let overlay = pageOverlays[id] {
-            overlay.beginInlineEditing(annotation, singleLine: singleLine)
+    func beginInlineTextEditing(
+        _ annotation: PDFAnnotation,
+        on page: PDFPage,
+        singleLine: Bool,
+        seedText: String,
+        frameBounds: CGRect
+    ) {
+        let request = InlineEditorRequest(
+            annotation: annotation,
+            page: page,
+            singleLine: singleLine,
+            seedText: seedText,
+            frameBounds: frameBounds
+        )
+        if let overlay = pageOverlays[ObjectIdentifier(page)] {
+            overlay.beginInlineEditing(request)
         } else {
-            requestedInlineEditor = (annotation, page, singleLine)
+            requestedInlineEditor = request
             layoutDocumentView()
         }
     }
@@ -408,7 +420,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         }
         if let request = requestedInlineEditor, request.page === page {
             requestedInlineEditor = nil
-            overlay.beginInlineEditing(request.annotation, singleLine: request.singleLine)
+            overlay.beginInlineEditing(request)
         }
     }
 

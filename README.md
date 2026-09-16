@@ -33,7 +33,13 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.
 - Independent document windows and native tabs, with `Command-N` for a new window and `Command-T` for a new tab.
 - Optional temporary recovery copies for unsaved edits, restored after an unexpected close or `Command-Q` without overwriting the original PDF. Deliberately closing a window or tab asks whether to save and discards its recovery state.
 - Optional startup restoration of every document that was open, each in its own window, including page, zoom, and page layout.
-- A sidebar that switches between page thumbnails, the PDF's own table of contents, and a list of every annotation that jumps to it when clicked.
+- A sidebar that switches between page thumbnails, the PDF's own table of contents, a list of every annotation that jumps to it when clicked, and search results with page and context.
+- Search that runs in the background, with match case and whole words, so a long document stays usable while it runs.
+- Page numbers, headers, footers, Bates numbering, and watermarks drawn into the page itself, with a live preview.
+- Night and sepia reading modes, which tint the view and change nothing in the document.
+- Document splitting every few pages or at each contents entry, and comparison against another version, page by page.
+- Form data exported to and imported from JSON, and Tab walking a form in reading order across pages.
+- Detection of digital signatures, reporting the signer, scheme, and date the file claims.
 - Multi-selected thumbnails, drag-to-reorder, and rotation, duplication, extraction, and deletion applied to the whole selection in one undo step.
 - Page cropping, PDF merging, and PDF creation from image files.
 - Straight lines, arrows, and polygons drawn corner by corner, with adjustable highlight strength.
@@ -112,6 +118,9 @@ Tests/SessionCloseSmoke/ standalone window-close and session-restore regression 
 Tests/OCRSearchableSmoke/ standalone searchable-OCR regression check
 Tests/PageSelectionSmoke/ standalone multi-page and annotation-list regression check
 Tests/DrawingToolsSmoke/ standalone line, arrow, polygon, and export regression check
+Tests/SearchOptionsSmoke/ standalone background-search regression check
+Tests/PageStampSmoke/    standalone page-stamping regression check
+Tests/DocumentToolsSmoke/ standalone compare, form-data, and signature regression check
 ```
 
 ## Redaction
@@ -131,12 +140,20 @@ Consequences worth knowing:
 - Replacing a line with the same text is invisible: the new run lands on the original baseline, within a fraction of a point.
 - Replacements reuse the original typeface when the system has it, and fall back to the closest available font otherwise.
 - A longer replacement first widens into the page margin, then shrinks by up to 30%, and only then wraps onto extra lines.
-- Editing a block of lines reflows it inside the block, so the replacement uses the font's own line spacing rather than the document's.
+- Editing a block replaces it one line at a time, laying the new text over the boxes of the lines it replaces, so the document's own line spacing is kept.
 - Text over a photograph or a gradient gets a flat rectangle of the dominant color behind it, which will be visible.
 
 ## Searchable Scans
 
 **Make Scanned Pages Searchable** runs Apple Vision over every page that carries no text and rebuilds those pages with the recognized words drawn on top in invisible text mode. The page looks exactly as it did, but the words can be selected, copied, and found with `Command-F`, in zzPDF and in any other reader. Pages that already have text are left alone, and the whole pass is a single undo step.
+
+## Stamps and Watermarks
+
+Page numbers, headers, footers, Bates numbering, and watermarks are drawn into the page rather than added as annotations. A page redrawn into a PDF context keeps its vectors and its text, so a stamp is permanent from the moment it is applied and costs the page nothing in quality or searchability. The text accepts `{page}`, `{pages}`, `{file}`, `{date}`, and `{bates}`.
+
+## Digital Signatures
+
+zzPDF reports whether a PDF carries digital signatures and what they say about themselves — signer, reason, scheme, and date. This is **detection, not validation**: nothing here checks a certificate, its chain, or whether the document changed after signing. Use a validator for that.
 
 ## Project Status
 

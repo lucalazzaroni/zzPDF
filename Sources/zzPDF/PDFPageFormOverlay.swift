@@ -56,11 +56,12 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
         focus(field)
     }
 
-    func beginInlineEditing(_ annotation: PDFAnnotation, singleLine: Bool) {
+    func beginInlineEditing(_ request: InlineEditorRequest) {
         guard let owner else { return }
+        let annotation = request.annotation
         inlineEditor?.cancel()
         let editor = PDFInlineTextEditor(frame: .zero)
-        editor.prepare(for: annotation, singleLine: singleLine)
+        editor.prepare(for: request)
         editor.onCommit = { [weak self] text in
             self?.inlineEditor = nil
             self?.owner?.workspace?.commitTextReplacement(annotation, text: text)
@@ -98,9 +99,9 @@ final class PDFPageFormOverlay: NSView, NSTextFieldDelegate {
     }
 
     private func updateInlineEditorFrame() {
-        guard let editor = inlineEditor, let annotation = editor.annotation,
-              let owner, let page else { return }
-        let pdfViewRect = owner.convert(annotation.bounds, from: page).standardized
+        guard let editor = inlineEditor, let owner, let page else { return }
+        let bounds = editor.frameBounds.isEmpty ? (editor.annotation?.bounds ?? .zero) : editor.frameBounds
+        let pdfViewRect = owner.convert(bounds, from: page).standardized
         editor.updateLayout(frame: convert(pdfViewRect, from: owner).standardized)
     }
 

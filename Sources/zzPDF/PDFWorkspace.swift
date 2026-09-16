@@ -103,18 +103,30 @@ private final class CoverLink {
     }
 }
 
-private struct TextEditSession {
+/// One line of an edit in progress: the replacement text, the rectangle hiding the
+/// original, and the geometry to restore if the edit is abandoned.
+private struct TextEditLine {
     let annotation: PDFAnnotation
     let cover: PDFAnnotation?
-    let page: PDFPage
-    let isNew: Bool
-    let multiline: Bool
     let baseline: CGFloat
-    let wasDirtyBefore: Bool
+    let bounds: CGRect
     let contents: String
     let font: NSFont?
-    let bounds: CGRect
     let coverBounds: CGRect?
+}
+
+private struct TextEditSession {
+    let lines: [TextEditLine]
+    let page: PDFPage
+    let isNew: Bool
+    let wasDirtyBefore: Bool
+
+    var annotation: PDFAnnotation { lines[0].annotation }
+    var multiline: Bool { lines.count > 1 }
+    /// What the editor starts with: the block as one piece of text.
+    var seedText: String { lines.map(\.contents).joined(separator: "\n") }
+    var annotations: [PDFAnnotation] { lines.map(\.annotation) }
+    var covers: [PDFAnnotation] { lines.compactMap(\.cover) }
 }
 
 private struct PDFEditAction {
@@ -1747,73 +1759,86 @@ final class PDFWorkspace: ObservableObject {
         pdfView?.cancelInlineTextEditing()
         let page = replacement.page
         let wasDirty = isDirty
-        let identifier = TextEditMarker.makeIdentifier()
-        let bounds = replacement.textBounds
+        guard !replacement.lines.isEmpty else { return }
 
-        let cover = PDFAnnotation(
-            bounds: FreeTextLayout.coverBounds(for: bounds, font: replacement.font)
-                .insetBy(dx: -FreeTextLayout.coverPadding, dy: -FreeTextLayout.coverPadding / 2),
-            forType: .square,
-            withProperties: nil
-        )
-        cover.color = replacement.backgroundColor
-        cover.interiorColor = replacement.backgroundColor
-        let border = PDFBorder()
-        border.lineWidth = 0
-        cover.border = border
-        cover.userName = identifier
+        var lines: [TextEditLine] = []
+        for line in replacement.lines {
+            let bounds = replacement.textBounds(for: line)
+            let identifier = TextEditMarker.makeIdentifier()
 
-        let text = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
-        text.contents = replacement.text
-        text.font = replacement.font
-        text.fontColor = replacement.fontColor
-        text.color = .clear
-        text.alignment = .left
-        text.userName = identifier
+            let cover = PDFAnnotation(
+                bounds: FreeTextLayout.coverBounds(for: bounds, font: replacement.font)
+                    .insetBy(dx: -FreeTextLayout.coverPadding, dy: -FreeTextLayout.coverPadding / 2),
+                forType: .square,
+                withProperties: nil
+            )
+            cover.color = replacement.backgroundColor
+            cover.interiorColor = replacement.backgroundColor
+            let border = PDFBorder()
+            border.lineWidth = 0
+            cover.border = border
+            cover.userName = identifier
 
-        page.addAnnotation(cover)
-        page.addAnnotation(text)
-        link(cover: cover, to: text)
-        activeTextEdit = TextEditSession(
-            annotation: text,
-            cover: cover,
-            page: page,
-            isNew: true,
-            multiline: replacement.isMultiline,
-            baseline: replacement.firstBaseline,
-            wasDirtyBefore: wasDirty,
-            contents: replacement.text,
-            font: replacement.font,
-            bounds: bounds,
-            coverBounds: cover.bounds
-        )
-        selectAnnotation(text)
+            let text = PDFAnnotation(bounds: bounds, forType: .freeText, withProperties: nil)
+            text.contents = line.text
+            text.font = replacement.font
+            text.fontColor = replacement.fontColor
+            text.color = .clear
+            text.alignment = .left
+            text.userName = identifier
+
+            page.addAnnotation(cover)
+            page.addAnnotation(text)
+            link(cover: cover, to: text)
+            lines.append(
+                TextEditLine(
+                    annotation: text,
+                    cover: cover,
+                    baseline: line.baseline,
+                    bounds: bounds,
+                    contents: line.text,
+                    font: replacement.font,
+                    coverBounds: cover.bounds
+                )
+            )
+        }
+
+        activeTextEdit = TextEditSession(lines: lines, page: page, isNew: true, wasDirtyBefore: wasDirty)
+        selectAnnotation(lines[0].annotation)
         isDirty = true
         statusMessage = "Editing page text — Escape restores the original"
         pdfView?.needsDisplay = true
-        pdfView?.beginInlineTextEditing(text, on: page, singleLine: !replacement.isMultiline)
+        pdfView?.beginInlineTextEditing(
+            lines[0].annotation,
+            on: page,
+            singleLine: lines.count == 1,
+            seedText: lines.map(\.contents).joined(separator: "\n"),
+            frameBounds: replacement.textBounds
+        )
     }
 
     func beginInlineTextEditing(_ annotation: PDFAnnotation) {
         guard annotation.isSubtype(.freeText), let page = annotation.page else { return }
         pdfView?.cancelInlineTextEditing()
         let contents = annotation.contents ?? ""
-        let multiline = contents.contains("\n")
-        activeTextEdit = TextEditSession(
+        let line = TextEditLine(
             annotation: annotation,
             cover: linkedCover(for: annotation),
-            page: page,
-            isNew: false,
-            multiline: multiline,
             baseline: FreeTextLayout.baseline(of: annotation) ?? annotation.bounds.minY,
-            wasDirtyBefore: isDirty,
+            bounds: annotation.bounds,
             contents: contents,
             font: annotation.font,
-            bounds: annotation.bounds,
             coverBounds: linkedCover(for: annotation)?.bounds
         )
+        activeTextEdit = TextEditSession(lines: [line], page: page, isNew: false, wasDirtyBefore: isDirty)
         selectAnnotation(annotation)
-        pdfView?.beginInlineTextEditing(annotation, on: page, singleLine: !multiline)
+        pdfView?.beginInlineTextEditing(
+            annotation,
+            on: page,
+            singleLine: !contents.contains("\n"),
+            seedText: contents,
+            frameBounds: annotation.bounds
+        )
     }
 
     /// Reflows the annotation while the editor is open so the box the user types in is
@@ -1826,27 +1851,44 @@ final class PDFWorkspace: ObservableObject {
 
     @discardableResult
     private func applyTextEditLayout(_ text: String, session: TextEditSession) -> NSFont? {
-        guard let baseFont = session.font ?? session.annotation.font else { return nil }
-        let result = TextFitting.fit(
-            text: text,
-            font: baseFont,
-            in: session.bounds,
-            multiline: session.multiline,
-            within: session.page.bounds(for: .cropBox)
-        )
-        let top = FreeTextLayout.topEdge(forBaseline: session.baseline, font: result.font)
-        let bottom = min(result.bounds.minY, top - 4)
-        session.annotation.contents = text
-        session.annotation.font = result.font
-        session.annotation.bounds = CGRect(
-            x: result.bounds.minX,
-            y: bottom,
-            width: result.bounds.width,
-            height: top - bottom
-        )
-        retainCover(for: session.annotation)
+        guard let baseFont = session.lines[0].font ?? session.annotation.font else { return nil }
+        let limit = session.page.bounds(for: .cropBox)
+
+        // A block keeps the document's own line spacing: the text is spread over the boxes
+        // of the lines it replaces rather than reflowed with the font's line height.
+        let pieces = session.multiline
+            ? LineDistributor.distribute(
+                text,
+                across: session.lines.map(\.bounds.width),
+                font: baseFont
+              )
+            : [text]
+
+        var displayedFont = baseFont
+        for (index, line) in session.lines.enumerated() {
+            let piece = index < pieces.count ? pieces[index] : ""
+            let result = TextFitting.fit(
+                text: piece,
+                font: baseFont,
+                in: line.bounds,
+                multiline: false,
+                within: limit
+            )
+            let top = FreeTextLayout.topEdge(forBaseline: line.baseline, font: result.font)
+            let bottom = min(result.bounds.minY, top - 4)
+            line.annotation.contents = piece
+            line.annotation.font = result.font
+            line.annotation.bounds = CGRect(
+                x: result.bounds.minX,
+                y: bottom,
+                width: result.bounds.width,
+                height: top - bottom
+            )
+            retainCover(for: line.annotation)
+            if index == 0 { displayedFont = result.font }
+        }
         pdfView?.needsDisplay = true
-        return result.font
+        return displayedFont
     }
 
     func commitTextReplacement(_ annotation: PDFAnnotation, text: String) {
@@ -1858,45 +1900,49 @@ final class PDFWorkspace: ObservableObject {
         activeTextEdit = nil
         applyTextEditLayout(text, session: session)
         let page = session.page
-        let cover = session.cover
+        let covers = session.covers
+        let annotations = session.annotations
         let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
         if session.isNew {
             registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-                page.removeAnnotation(annotation)
-                if let cover { page.removeAnnotation(cover) }
+                for annotation in annotations { page.removeAnnotation(annotation) }
+                for cover in covers { page.removeAnnotation(cover) }
             }, redo: {
-                if let cover { page.addAnnotation(cover) }
-                page.addAnnotation(annotation)
+                for cover in covers { page.addAnnotation(cover) }
+                for annotation in annotations { page.addAnnotation(annotation) }
             })
             synchronizeSelectedTextAppearance()
             changed(isEmpty ? "Page text removed" : "Page text replaced")
             return
         }
 
-        let newContents = annotation.contents ?? ""
-        let newFont = annotation.font
-        let newBounds = annotation.bounds
-        let newCoverBounds = cover?.bounds
-        guard newContents != session.contents || newBounds != session.bounds else {
+        let before = session.lines
+        let after = session.lines.map {
+            ($0.annotation, $0.annotation.contents ?? "", $0.annotation.font, $0.annotation.bounds, $0.cover?.bounds)
+        }
+        let unchanged = zip(before, after).allSatisfy { line, current in
+            line.contents == current.1 && line.bounds == current.3
+        }
+        guard !unchanged else {
             isDirty = session.wasDirtyBefore
             pdfView?.needsDisplay = true
             return
         }
-        let previousContents = session.contents
-        let previousFont = session.font
-        let previousBounds = session.bounds
-        let previousCoverBounds = session.coverBounds
         registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-            annotation.contents = previousContents
-            annotation.font = previousFont
-            annotation.bounds = previousBounds
-            if let cover, let previousCoverBounds { cover.bounds = previousCoverBounds }
+            for line in before {
+                line.annotation.contents = line.contents
+                line.annotation.font = line.font
+                line.annotation.bounds = line.bounds
+                if let cover = line.cover, let bounds = line.coverBounds { cover.bounds = bounds }
+            }
         }, redo: {
-            annotation.contents = newContents
-            annotation.font = newFont
-            annotation.bounds = newBounds
-            if let cover, let newCoverBounds { cover.bounds = newCoverBounds }
+            for (index, state) in after.enumerated() {
+                state.0.contents = state.1
+                state.0.font = state.2
+                state.0.bounds = state.3
+                if let cover = before[index].cover, let bounds = state.4 { cover.bounds = bounds }
+            }
         })
         synchronizeSelectedTextAppearance()
         changed("Text updated")
@@ -1912,15 +1958,19 @@ final class PDFWorkspace: ObservableObject {
         }
         activeTextEdit = nil
         if session.isNew {
-            session.page.removeAnnotation(annotation)
-            if let cover = session.cover { session.page.removeAnnotation(cover) }
-            unlink(text: annotation)
+            for line in session.lines {
+                session.page.removeAnnotation(line.annotation)
+                if let cover = line.cover { session.page.removeAnnotation(cover) }
+                unlink(text: line.annotation)
+            }
             selectedAnnotation = nil
         } else {
-            annotation.contents = session.contents
-            annotation.font = session.font
-            annotation.bounds = session.bounds
-            if let cover = session.cover, let coverBounds = session.coverBounds { cover.bounds = coverBounds }
+            for line in session.lines {
+                line.annotation.contents = line.contents
+                line.annotation.font = line.font
+                line.annotation.bounds = line.bounds
+                if let cover = line.cover, let bounds = line.coverBounds { cover.bounds = bounds }
+            }
         }
         isDirty = session.wasDirtyBefore
         statusMessage = session.isNew ? "Text edit discarded" : "Text editing cancelled"
