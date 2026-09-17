@@ -40,9 +40,10 @@ enum FreeTextLayout {
         )
     }
 
-    /// Antialiased glyph edges reach a little past the reported text bounds, so the
-    /// opaque rectangle is grown by a hair before it is put on the page.
-    static let coverPadding: CGFloat = 1
+    /// Antialiased glyph edges reach a little past the reported text bounds, and at a high
+    /// zoom that fringe is what is left showing around a replacement if the rectangle hiding
+    /// the original stops exactly at the measurement, so it is grown by a little more.
+    static let coverPadding: CGFloat = 1.5
 
     /// The opaque rectangle that hides the replaced page text, inverse of `textBounds(covering:…)`.
     static func coverBounds(for textBounds: CGRect, font: NSFont) -> CGRect {
@@ -297,6 +298,13 @@ enum PageBackgroundSampler {
 enum TextFitting {
     /// Replacements shrink a little to stay on their line, but never so much that the
     /// page visibly changes typeface size; past that point the text wraps instead.
+    /// Room left beyond what the text measures. PDFKit lays a free-text annotation out
+    /// itself, and its idea of the width is not quite ours: fitting the text to the last
+    /// point lets it decide the line is too long, break it, and drop what it moved to a
+    /// line the box has no room for. The tail of a line disappearing when one character is
+    /// typed is exactly that, so the box is always given a little more than the measurement.
+    static let widthSlack: CGFloat = 6
+
     static let minimumScale: CGFloat = 0.7
     static let minimumSize: CGFloat = 4
 
@@ -319,7 +327,9 @@ enum TextFitting {
         var box = bounds
 
         if !wraps {
-            let needed = ceil(measure(text, font: font).width) + FreeTextLayout.horizontalInset * 2 + 1
+            let needed = ceil(measure(text, font: font).width)
+                + FreeTextLayout.horizontalInset * 2
+                + widthSlack
             if needed > box.width, limit.width > 0 {
                 let margin = max(12, box.minX - limit.minX)
                 let maximumWidth = max(box.width, limit.maxX - margin - box.minX)
@@ -366,9 +376,9 @@ enum TextFitting {
 
     static func fits(_ text: String, font: NSFont, width: CGFloat, height: CGFloat, multiline: Bool) -> Bool {
         guard multiline || text.contains("\n") else {
-            return ceil(measure(text, font: font).width) <= ceil(width)
+            return ceil(measure(text, font: font).width) + widthSlack <= ceil(width)
         }
-        return ceil(wrappedHeight(text, font: font, width: width)) <= ceil(height)
+        return ceil(wrappedHeight(text, font: font, width: width - widthSlack)) <= ceil(height)
     }
 
     static func resized(_ font: NSFont, to size: CGFloat) -> NSFont {
