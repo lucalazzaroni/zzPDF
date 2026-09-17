@@ -110,19 +110,18 @@ struct PageSelectionSmoke {
         workspace.beginTextReplacement(at: textPoint, on: page)
         guard let replaced = workspace.selectedAnnotation else { fail("The replacement was not started") }
         workspace.commitTextReplacement(replaced, text: "Uno")
+        // The note is an annotation and shows in the list. The replaced line is not: it is
+        // written into the page, so it shows up as text rather than as a row.
         let entries = workspace.annotationEntries()
-        check(entries.count == 2, "The annotation list holds \(entries.count) rows instead of 2")
+        check(entries.count == 1, "The annotation list holds \(entries.count) rows instead of 1")
         check(
             entries.contains { $0.summary == "Da rivedere" && $0.kind == "Note" },
             "The note is missing from the annotation list"
         )
+        check(entries.allSatisfy { $0.pageIndex == 0 }, "The annotation list reports the wrong page")
         check(
-            entries.contains { $0.kind == "Replaced text" },
-            "The replaced text is missing from the annotation list"
-        )
-        check(
-            entries.allSatisfy { $0.pageIndex == 0 },
-            "The annotation list reports the wrong page"
+            (workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Uno"),
+            "The replaced text is not part of the page"
         )
 
         // Splitting writes one file per part, covering every page exactly once.

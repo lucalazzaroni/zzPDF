@@ -92,11 +92,13 @@ struct DrawingToolsSmoke {
             "A black annotation color produced a black highlight rather than falling back to yellow"
         )
 
-        // Changing the font of replaced text keeps it on its baseline.
+        // Changing the font of a replacement keeps it on its baseline. The controls act on
+        // the edit while it is open: once committed, the text is page content and has no
+        // annotation left to restyle.
         workspace.activeTool = .editText
         workspace.beginTextReplacement(at: CGPoint(x: 70, y: 462), on: page)
         guard let replaced = workspace.selectedAnnotation else { fail("Nothing was picked up to replace") }
-        workspace.commitTextReplacement(replaced, text: "Nuovo")
+        workspace.previewTextEdit("Nuovo")
         let baseline = FreeTextLayout.baseline(of: replaced) ?? 0
         workspace.setSelectedTextFontFamily("Times New Roman")
         check(
@@ -115,12 +117,33 @@ struct DrawingToolsSmoke {
         )
         workspace.toggleSelectedTextTrait(bold: true)
         check(!workspace.selectedTextIsBold, "Bold did not toggle back off")
-        workspace.undo()
-        workspace.undo()
         check(
             replaced.font?.familyName == "Times New Roman",
-            "Undo went past the font change"
+            "Toggling bold lost the chosen family"
         )
+
+        // Committing writes it into the page in the font that was chosen, and carries the
+        // drawings already on the page across to the rewritten one rather than flattening
+        // them into it.
+        let drawingsBefore = page.annotations.filter { !TextEditMarker.isTextEdit($0) }.count
+        check(drawingsBefore > 0, "The fixture has no drawings to carry over")
+        workspace.commitTextReplacement(replaced, text: "Nuovo")
+        guard let rewritten = workspace.pdfDocument?.page(at: 0) else { fail("The page is gone") }
+        check(
+            !rewritten.annotations.contains(where: TextEditMarker.isTextEdit),
+            "Committing left the edit's own annotations on the page"
+        )
+        check(
+            rewritten.annotations.count == drawingsBefore,
+            "The page came back with \(rewritten.annotations.count) drawings instead of \(drawingsBefore)"
+        )
+        check((rewritten.string ?? "").contains("Nuovo"), "The replacement is not on the page")
+        workspace.undo()
+        check(
+            !((workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Nuovo")),
+            "Undo left the replacement on the page"
+        )
+        workspace.redo()
 
         // Exports.
         workspace.selectPage(0)

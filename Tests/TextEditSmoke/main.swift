@@ -79,81 +79,110 @@ struct TextEditSmoke {
         )
         check(cover.bounds.contains(detected.coverBounds.insetBy(dx: 0.5, dy: 0.5)), "The cover does not hide the original text")
 
-        // Committing keeps the pair, records one undo step, and restores both annotations.
+        // Committing writes the replacement into the page itself. The annotations were
+        // only there to make the edit live: what is left is page content, like the text
+        // around it, which is what makes a replaced line look the same as its neighbours.
+        let originalText = page.string ?? ""
         workspace.commitTextReplacement(replaced, text: "Ciao mondo")
-        check(replaced.contents == "Ciao mondo", "The committed text is \"\(replaced.contents ?? "")\"")
-        check(replaced.shouldDisplay, "The replacement stayed hidden after committing")
+        guard let committed = workspace.pdfDocument?.page(at: 0) else { fail("The page is gone") }
+        check(
+            committed.annotations.isEmpty,
+            "Committing left \(committed.annotations.count) annotations on the page"
+        )
+        check(
+            (committed.string ?? "").contains("Ciao mondo"),
+            "The new text is not part of the page: \"\(committed.string ?? "")\""
+        )
+        check(
+            !workspace.pdfDocument!.findString("Ciao mondo", withOptions: []).isEmpty,
+            "The new text is not searchable"
+        )
         check(workspace.isDirty, "Replacing page text did not mark the document as edited")
         check(workspace.canUndo, "Replacing page text registered no undo step")
+
         workspace.undo()
         check(
-            page.annotations.count == annotationsBefore,
-            "Undo left \(page.annotations.count - annotationsBefore) annotations behind"
+            (workspace.pdfDocument?.page(at: 0)?.string ?? "") == originalText,
+            "Undo left the page reading \"\(workspace.pdfDocument?.page(at: 0)?.string ?? "")\""
         )
+        check(!workspace.isDirty, "Undo left the document marked as edited")
         workspace.redo()
         check(
-            page.annotations.count == annotationsBefore + 2,
-            "Redo restored \(page.annotations.count - annotationsBefore) annotations instead of 2"
+            (workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Ciao mondo"),
+            "Redo did not put the replacement back"
         )
+        workspace.undo()
+
+        // The rest of this section works on an edit still in progress, where the
+        // replacement is an annotation paired with the rectangle hiding the original.
+        workspace.beginTextReplacement(at: CGPoint(x: 60, y: 342), on: page)
+        guard let live = workspace.selectedAnnotation, let liveCover = workspace.linkedCover(for: live) else {
+            fail("A second edit could not be started")
+        }
 
         // Moving the replacement drags its cover along.
-        let coverBefore = cover.bounds
-        let moved = replaced.bounds.offsetBy(dx: 12, dy: -7)
-        replaced.bounds = moved
-        workspace.synchronizeCover(for: replaced)
+        let coverBefore = liveCover.bounds
+        let moved = live.bounds.offsetBy(dx: 12, dy: -7)
+        live.bounds = moved
+        workspace.synchronizeCover(for: live)
         check(
-            cover.bounds == coverBefore.offsetBy(dx: 12, dy: -7),
+            liveCover.bounds == coverBefore.offsetBy(dx: 12, dy: -7),
             "The cover did not follow the replacement to \(moved)"
         )
-        replaced.bounds = moved.offsetBy(dx: -12, dy: 7)
-        workspace.synchronizeCover(for: replaced)
-        check(cover.bounds == coverBefore, "Moving the replacement back did not restore the cover")
+        live.bounds = moved.offsetBy(dx: -12, dy: 7)
+        workspace.synchronizeCover(for: live)
+        check(liveCover.bounds == coverBefore, "Moving the replacement back did not restore the cover")
 
         // Shrinking the replacement must not uncover the text it hides.
-        workspace.applyTextFont(TextFitting.resized(replaced.font!, to: 8), to: replaced)
-        check(cover.bounds == coverBefore, "Shrinking the replacement moved its cover")
-        workspace.applyTextFont(TextFitting.resized(replaced.font!, to: 20), to: replaced)
+        workspace.applyTextFont(TextFitting.resized(live.font!, to: 8), to: live)
+        check(liveCover.bounds == coverBefore, "Shrinking the replacement moved its cover")
+        workspace.applyTextFont(TextFitting.resized(live.font!, to: 20), to: live)
 
         // Resizing keeps the text on its original baseline instead of letting it drift.
-        let baselineBefore = FreeTextLayout.baseline(of: replaced) ?? 0
-        workspace.applyTextFont(TextFitting.resized(replaced.font!, to: 28), to: replaced)
+        let baselineBefore = FreeTextLayout.baseline(of: live) ?? 0
+        workspace.applyTextFont(TextFitting.resized(live.font!, to: 28), to: live)
         check(
-            abs((FreeTextLayout.baseline(of: replaced) ?? 0) - baselineBefore) < 0.05,
-            "Resizing moved the baseline to \(FreeTextLayout.baseline(of: replaced) ?? 0)"
+            abs((FreeTextLayout.baseline(of: live) ?? 0) - baselineBefore) < 0.05,
+            "Resizing moved the baseline to \(FreeTextLayout.baseline(of: live) ?? 0)"
         )
-        workspace.applyTextFont(TextFitting.resized(replaced.font!, to: 20), to: replaced)
+        workspace.applyTextFont(TextFitting.resized(live.font!, to: 20), to: live)
+        let replaced2 = live
 
         // A slightly longer line widens into the margin at its original size.
         let pageBounds = page.bounds(for: .cropBox)
         let widened = TextFitting.fit(
             text: "Hello Acrobat World again",
-            font: replaced.font!,
-            in: replaced.bounds,
+            font: replaced2.font!,
+            in: replaced2.bounds,
             multiline: false,
             within: pageBounds
         )
         check(
-            abs(widened.font.pointSize - replaced.font!.pointSize) < 0.01,
+            abs(widened.font.pointSize - replaced2.font!.pointSize) < 0.01,
             "A slightly longer line was shrunk to \(widened.font.pointSize) instead of widening"
         )
-        check(widened.bounds.width > replaced.bounds.width, "A longer line did not widen its box")
+        check(widened.bounds.width > replaced2.bounds.width, "A longer line did not widen its box")
         check(widened.bounds.maxX <= pageBounds.maxX, "The widened box left the page")
 
         // A much longer replacement shrinks, and only wraps once shrinking is exhausted.
         let long = String(repeating: "much longer replacement ", count: 4)
         let reflowed = TextFitting.fit(
             text: long,
-            font: replaced.font!,
-            in: replaced.bounds,
+            font: replaced2.font!,
+            in: replaced2.bounds,
             multiline: false,
             within: pageBounds
         )
-        check(reflowed.font.pointSize < replaced.font!.pointSize, "Overlong text was not shrunk")
+        check(reflowed.font.pointSize < replaced2.font!.pointSize, "Overlong text was not shrunk")
         check(
             TextFitting.fits(long, font: reflowed.font, in: reflowed.bounds, multiline: true),
             "The reflowed text still does not fit its box"
         )
-        check(reflowed.bounds.maxY == replaced.bounds.maxY, "Reflowing moved the top of the box")
+        check(reflowed.bounds.maxY == replaced2.bounds.maxY, "Reflowing moved the top of the box")
+
+        // Done with the live edit; discard it so the page is back to its original state.
+        workspace.cancelTextReplacement(replaced2)
+        check(page.annotations.isEmpty, "Discarding the live edit left \(page.annotations.count) annotations")
 
         // Dragging across several lines replaces the whole block at once.
         guard let block = workspace.pdfDocument.flatMap({ _ in
@@ -192,51 +221,30 @@ struct TextEditSmoke {
         }
 
         let longEnough = "Una prima riga piuttosto lunga da distribuire e poi il resto del testo."
+        let blockOriginal = page.string ?? ""
         workspace.commitTextReplacement(blockText, text: longEnough)
-        let written = blockAnnotations.map { ($0.contents ?? "") }
+        guard let blockPage = workspace.pdfDocument?.page(at: 0) else { fail("The page is gone") }
         check(
-            written.joined(separator: " ").split(separator: " ") == longEnough.split(separator: " "),
-            "The block was laid out as \(written) and lost or reordered words"
-        )
-        check(!written[0].isEmpty, "The first line of the block came out empty")
-        check(
-            blockAnnotations.allSatisfy { annotation in
-                originalBaselines.contains { abs((FreeTextLayout.baseline(of: annotation) ?? 0) - $0) < 0.05 }
-            },
-            "Committing the block moved a line off its baseline"
+            blockPage.annotations.isEmpty,
+            "Committing a block left \(blockPage.annotations.count) annotations on the page"
         )
 
-        // Undoing a block takes all four annotations with it, in one step.
+        // The words are all there, spread over the lines they replaced.
+        let blockText2 = blockPage.string ?? ""
+        for word in longEnough.split(separator: " ") {
+            check(blockText2.contains(word), "The word \"\(word)\" is missing from the rewritten page")
+        }
+
+        // Undoing a block is one step, and puts the page back as it was.
         workspace.undo()
         check(
-            page.annotations.count == beforeBlock,
-            "Undoing the block left \(page.annotations.count - beforeBlock) annotations behind"
+            (workspace.pdfDocument?.page(at: 0)?.string ?? "") == blockOriginal,
+            "Undoing the block left the page reading differently"
         )
         workspace.redo()
-        check(page.annotations.count == beforeBlock + 4, "Redoing the block did not restore all four annotations")
-
-        // Saving and reopening keeps both pairs linked.
-        let saved = directory.appendingPathComponent("edited.pdf")
-        check(document.write(to: saved), "The edited document could not be written")
-
-        let reopened = PDFWorkspace(
-            preferences: AppPreferences(defaults: defaults),
-            recoveryStore: recoveryStore
-        )
-        let reopenedView = InteractivePDFView(frame: CGRect(x: 0, y: 0, width: 460, height: 360))
-        reopened.pdfView = reopenedView
-        reopenedView.workspace = reopened
-        reopened.load(saved)
-        guard let reopenedPage = reopened.pdfDocument?.page(at: 0) else { fail("The saved document could not be reopened") }
-        let reopenedTexts = reopenedPage.annotations.filter { $0.isSubtype(.freeText) && TextEditMarker.isTextEdit($0) }
-        // One run for the headline, one for each line of the replaced block.
-        check(reopenedTexts.count == 3, "The saved document holds \(reopenedTexts.count) replaced runs instead of 3")
-        for text in reopenedTexts {
-            check(reopened.linkedCover(for: text) != nil, "A reopened replacement lost its cover link")
-        }
         check(
-            reopenedTexts.contains { $0.contents == "Ciao mondo" },
-            "The saved document lost the replaced headline"
+            (workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Una prima riga"),
+            "Redoing the block did not put the replacement back"
         )
 
         // A click on the page goes through the canvas and opens the editor on that line.
@@ -411,18 +419,35 @@ struct TextEditSmoke {
         clickWorkspace.activateSelectTool()
         check(clickWorkspace.activeTool == .select, "The second Escape did not return to Select")
 
-        // Escape on a line that was already replaced puts back what was committed, rather
-        // than removing the replacement or keeping what was just typed.
+        // Escape on a line that has already been replaced puts back what was committed.
+        // The replacement is page content by now, so editing it again means picking the
+        // line up afresh rather than reopening an annotation.
         clickWorkspace.activateTool(.editText)
         clickWorkspace.beginTextReplacement(at: pagePoint, on: clickPage)
-        guard let kept = clickWorkspace.selectedAnnotation else { fail("No replacement was started") }
-        clickWorkspace.commitTextReplacement(kept, text: "Versione buona")
-        let keptCount = clickPage.annotations.count
-        clickWorkspace.beginInlineTextEditing(kept)
+        guard let first = clickWorkspace.selectedAnnotation else { fail("No replacement was started") }
+        clickWorkspace.commitTextReplacement(first, text: "Versione buona")
+        guard let rewritten = clickWorkspace.pdfDocument?.page(at: 0) else { fail("The page is gone") }
+        check(
+            (rewritten.string ?? "").contains("Versione buona"),
+            "The committed text is not on the page"
+        )
+
+        clickWorkspace.beginTextReplacement(at: pagePoint, on: rewritten)
+        guard let second = clickWorkspace.selectedAnnotation else { fail("The line could not be picked up again") }
+        check(
+            second.contents == "Versione buona",
+            "Picking the line up again seeded \"\(second.contents ?? "")\" instead of what was committed"
+        )
         clickWorkspace.previewTextEdit("Ripensamento da buttare")
         clickWorkspace.activateSelectTool()
-        check(kept.contents == "Versione buona", "Escape kept \"\(kept.contents ?? "")\" instead of the committed text")
-        check(clickPage.annotations.count == keptCount, "Escape removed a replacement that had been committed")
+        check(
+            (clickWorkspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Versione buona"),
+            "Escape did not put back what had been committed"
+        )
+        check(
+            !(clickWorkspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Ripensamento"),
+            "Escape kept the text that was being typed"
+        )
         check(clickWorkspace.activeTool == .editText, "Escape on a re-edit already left the Edit Text tool")
         clickWorkspace.activateSelectTool()
         check(clickWorkspace.activeTool == .select, "The second Escape did not return to Select")

@@ -120,6 +120,7 @@ private struct TextEditSession {
     let page: PDFPage
     let isNew: Bool
     let wasDirtyBefore: Bool
+    let background: NSColor
 
     var annotation: PDFAnnotation { lines[0].annotation }
     var multiline: Bool { lines.count > 1 }
@@ -1803,7 +1804,13 @@ final class PDFWorkspace: ObservableObject {
             )
         }
 
-        activeTextEdit = TextEditSession(lines: lines, page: page, isNew: true, wasDirtyBefore: wasDirty)
+        activeTextEdit = TextEditSession(
+            lines: lines,
+            page: page,
+            isNew: true,
+            wasDirtyBefore: wasDirty,
+            background: replacement.backgroundColor
+        )
         selectAnnotation(lines[0].annotation)
         isDirty = true
         statusMessage = "Editing page text — Escape restores the original"
@@ -1830,7 +1837,13 @@ final class PDFWorkspace: ObservableObject {
             font: annotation.font,
             coverBounds: linkedCover(for: annotation)?.bounds
         )
-        activeTextEdit = TextEditSession(lines: [line], page: page, isNew: false, wasDirtyBefore: isDirty)
+        activeTextEdit = TextEditSession(
+            lines: [line],
+            page: page,
+            isNew: false,
+            wasDirtyBefore: isDirty,
+            background: linkedCover(for: annotation)?.interiorColor ?? .white
+        )
         selectAnnotation(annotation)
         pdfView?.beginInlineTextEditing(
             annotation,
@@ -1899,67 +1912,95 @@ final class PDFWorkspace: ObservableObject {
         }
         activeTextEdit = nil
         applyTextEditLayout(text, session: session)
-        let page = session.page
-        let covers = session.covers
-        let annotations = session.annotations
-        let isEmpty = text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
 
-        if session.isNew {
-            // Opening a line and leaving it alone must not replace it with a copy of
-            // itself: clicking away without typing leaves the page as it was.
-            guard text != session.seedText else {
-                for annotation in annotations { page.removeAnnotation(annotation) }
-                for cover in covers { page.removeAnnotation(cover) }
-                for annotation in annotations { unlink(text: annotation) }
-                selectedAnnotation = nil
-                isDirty = session.wasDirtyBefore
-                statusMessage = "Text left unchanged"
-                pdfView?.needsDisplay = true
-                pdfView?.refreshInteractionAppearance()
-                objectWillChange.send()
-                return
-            }
-            registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-                for annotation in annotations { page.removeAnnotation(annotation) }
-                for cover in covers { page.removeAnnotation(cover) }
-            }, redo: {
-                for cover in covers { page.addAnnotation(cover) }
-                for annotation in annotations { page.addAnnotation(annotation) }
-            })
-            synchronizeSelectedTextAppearance()
-            changed(isEmpty ? "Page text removed" : "Page text replaced")
+        let page = session.page
+        let annotations = session.annotations
+        let covers = session.covers
+        // Only the text decides whether anything happened: the box around it is refitted
+        // on every keystroke, so its size says nothing about what the reader did.
+        let unchanged = zip(session.lines, annotations).allSatisfy { line, current in
+            line.contents == (current.contents ?? "")
+        }
+
+        // Opening a line and leaving it alone must not touch the page.
+        if session.isNew, unchanged {
+            for annotation in annotations { page.removeAnnotation(annotation) }
+            for cover in covers { page.removeAnnotation(cover) }
+            for annotation in annotations { unlink(text: annotation) }
+            selectedAnnotation = nil
+            isDirty = session.wasDirtyBefore
+            statusMessage = "Text left unchanged"
+            pdfView?.needsDisplay = true
+            pdfView?.refreshInteractionAppearance()
+            objectWillChange.send()
             return
         }
-
-        let before = session.lines
-        let after = session.lines.map {
-            ($0.annotation, $0.annotation.contents ?? "", $0.annotation.font, $0.annotation.bounds, $0.cover?.bounds)
-        }
-        let unchanged = zip(before, after).allSatisfy { line, current in
-            line.contents == current.1 && line.bounds == current.3
-        }
-        guard !unchanged else {
+        if !session.isNew, unchanged {
             isDirty = session.wasDirtyBefore
             pdfView?.needsDisplay = true
             return
         }
-        registerEdit(wasDirtyBefore: session.wasDirtyBefore, undo: {
-            for line in before {
-                line.annotation.contents = line.contents
-                line.annotation.font = line.font
-                line.annotation.bounds = line.bounds
-                if let cover = line.cover, let bounds = line.coverBounds { cover.bounds = bounds }
-            }
-        }, redo: {
-            for (index, state) in after.enumerated() {
-                state.0.contents = state.1
-                state.0.font = state.2
-                state.0.bounds = state.3
-                if let cover = before[index].cover, let bounds = state.4 { cover.bounds = bounds }
-            }
-        })
-        synchronizeSelectedTextAppearance()
-        changed("Text updated")
+
+        writeReplacementIntoPage(session)
+    }
+
+    /// Finishes an edit by making the replacement part of the page.
+    ///
+    /// A replacement stays an annotation only while it is being typed, which is what keeps
+    /// the edit live and cheap to undo. Committed, it is written into the page itself: a
+    /// line left as an annotation is drawn by PDFKit through its own path and does not
+    /// match the text around it on screen, however right it is in the file.
+    private func writeReplacementIntoPage(_ session: TextEditSession) {
+        guard let document = pdfDocument else { return }
+        let page = session.page
+        let index = document.index(for: page)
+        let annotations = session.annotations
+        let covers = session.covers
+
+        let lines: [TextReplacementWriter.Line] = zip(session.lines, annotations).compactMap { line, annotation in
+            guard let font = annotation.font, let cover = line.cover else { return nil }
+            return TextReplacementWriter.Line(
+                cover: cover.bounds,
+                baseline: FreeTextLayout.baseline(of: annotation) ?? line.baseline,
+                text: annotation.contents ?? "",
+                font: font,
+                color: annotation.fontColor ?? .black
+            )
+        }
+
+        for annotation in annotations { page.removeAnnotation(annotation) }
+        for cover in covers { page.removeAnnotation(cover) }
+        for annotation in annotations { unlink(text: annotation) }
+        selectedAnnotation = nil
+
+        guard index != NSNotFound,
+              !lines.isEmpty,
+              let rewritten = TextReplacementWriter.page(
+                replacing: lines,
+                background: session.background,
+                on: page
+              ) else {
+            presentError("The page could not be rewritten with the new text.")
+            isDirty = session.wasDirtyBefore
+            pdfView?.needsDisplay = true
+            return
+        }
+
+        TextReplacementWriter.transferAnnotations(from: page, to: rewritten)
+
+        let wasDirty = session.wasDirtyBefore
+        let apply: (Bool) -> Void = { replaced in
+            guard index < document.pageCount else { return }
+            let from = replaced ? page : rewritten
+            let to = replaced ? rewritten : page
+            TextReplacementWriter.transferAnnotations(from: from, to: to)
+            document.removePage(at: index)
+            document.insert(to, at: index)
+        }
+        apply(true)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { apply(false) }, redo: { apply(true) })
+        pdfView?.layoutDocumentView()
+        changed(lines.count == 1 ? "Page text replaced" : "\(lines.count) lines replaced")
     }
 
     func cancelTextReplacement(_ annotation: PDFAnnotation) {

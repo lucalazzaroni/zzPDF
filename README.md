@@ -133,11 +133,14 @@ The consequence is deliberate: text on a redacted page stops being selectable an
 
 ## Editing Page Text
 
-The Edit Text tool (`Command-Shift-E`) replaces a run of existing page text rather than rewriting the original content stream. Selecting a line reads its font, size, and color, samples the paper color behind it, hides it under an opaque rectangle of that color, and puts an editable copy on the same baseline. The result is undoable, movable, resizable, and saved as a normal PDF annotation, and **Export Flattened** merges it into the page content.
+The Edit Text tool (`Command-Shift-E`) replaces a run of existing page text. Selecting a line reads its font, size, and color, samples the paper color behind it, and opens an editor on the same baseline.
+
+While the line is being typed it is an annotation, which is what makes the edit live and cheap to undo. On commit it is written into the page itself: the page is redrawn into a PDF context, which keeps every vector and glyph of the original, with the old run painted over in the paper color and the new text in its place. A replaced line is therefore made of the same stuff as the text around it, and looks identical on screen, in print, and in every export — which it does not if it is left as an annotation, because PDFKit draws those through its own path. The page keeps its rotation, and the notes on it are carried across rather than flattened.
 
 Consequences worth knowing:
 
 - Replacing a line with the same text is invisible: the new run lands on the original baseline, within a fraction of a point.
+- The original run is painted over, not deleted: PDFKit cannot remove text from a content stream, so a replaced line's old words stay in the file underneath and can still be found by a text search. **Export Flattened** does not change that; rasterizing the page, as a redaction does, is the only way to be rid of them.
 - Replacements reuse the original typeface when the system has it, and fall back to the closest available font otherwise.
 - A longer replacement first widens into the page margin, then shrinks by up to 30%, and only then wraps onto extra lines.
 - Editing a block replaces it one line at a time, laying the new text over the boxes of the lines it replaces, so the document's own line spacing is kept.
