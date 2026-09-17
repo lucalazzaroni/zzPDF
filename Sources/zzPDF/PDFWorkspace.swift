@@ -2817,6 +2817,19 @@ final class PDFWorkspace: ObservableObject {
         objectWillChange.send()
     }
 
+    /// The scheduled recovery copy. Writing one must never disturb an edit in progress,
+    /// so while the in-place editor is open the copy waits rather than committing what is
+    /// still being typed.
+    private func autosaveTick() {
+        guard activeTextEdit == nil else {
+            scheduleTemporaryAutosave()
+            return
+        }
+        flushTemporaryAutosave()
+    }
+
+    /// Writes the recovery copy now, finishing an open edit first. Called when the window
+    /// is closing, the app is quitting, or the document is being written out.
     func flushTemporaryAutosave() {
         finishActiveTextEditing()
         temporaryAutosaveWorkItem?.cancel()
@@ -2882,7 +2895,7 @@ final class PDFWorkspace: ObservableObject {
         guard !sessionDiscarded, preferences.temporaryAutosave, pdfDocument != nil else { return }
         temporaryAutosaveWorkItem?.cancel()
         let workItem = DispatchWorkItem { [weak self] in
-            self?.flushTemporaryAutosave()
+            self?.autosaveTick()
         }
         temporaryAutosaveWorkItem = workItem
         DispatchQueue.main.asyncAfter(deadline: .now() + 1.5, execute: workItem)

@@ -294,10 +294,25 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         return cursorForActiveTool
     }
 
+    /// Tints the page for night or sepia reading.
+    ///
+    /// A filter needs the view to be layer-backed, and a layer-backed PDFView draws its
+    /// text into that layer instead of straight to the screen, which softens every glyph.
+    /// So normal reading leaves the view exactly as PDFKit wants it, and the tinted modes
+    /// pin the layer to the screen's own scale rather than settling for a coarser one.
     func applyReadingMode(_ mode: ReadingMode) {
-        wantsLayer = true
-        layer?.filters = mode.filters
         backgroundColor = mode.backgroundColor
+        let filters = mode.filters
+        guard !filters.isEmpty else {
+            // Not an empty array: any non-nil list of filters, even an empty one, puts the
+            // layer on the filtered path, where the page is rasterized before it reaches
+            // the screen and every glyph comes out soft.
+            layer?.filters = nil
+            return
+        }
+        wantsLayer = true
+        layer?.contentsScale = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        layer?.filters = filters
     }
 
     func refreshInteractionAppearance() {
