@@ -199,7 +199,7 @@ enum PageTextScanner {
 
         guard let first = lines.first else { return nil }
         let firstBounds = first.bounds(for: page)
-        let style = textStyle(of: first, fallbackHeight: firstBounds.height)
+        let style = textStyle(of: first, on: page, bounds: firstBounds)
         let backgroundColor = PageBackgroundSampler.dominantColor(in: union, on: page)
         let replaceableLines = zip(lines, strings).compactMap { line, string -> ReplaceableLine? in
             let bounds = line.bounds(for: page)
@@ -222,15 +222,29 @@ enum PageTextScanner {
         )
     }
 
-    private static func textStyle(of selection: PDFSelection, fallbackHeight: CGFloat) -> (font: NSFont, color: NSColor) {
-        let fallbackFont = NSFont(name: "Helvetica", size: max(6, fallbackHeight)) ?? .systemFont(ofSize: max(6, fallbackHeight))
-        guard let attributed = selection.attributedString, attributed.length > 0 else {
-            return (fallbackFont, .black)
+    /// The typeface and colour a run of page text is set in.
+    ///
+    /// PDFKit reports the size faithfully but not the font: for anything it cannot match to
+    /// an installed face — every LaTeX document, most embedded subsets — it says Helvetica.
+    /// The page's own content stream is asked first, and PDFKit is only the fallback.
+    private static func textStyle(
+        of selection: PDFSelection,
+        on page: PDFPage,
+        bounds: CGRect
+    ) -> (font: NSFont, color: NSColor) {
+        let fallbackHeight = max(6, bounds.height)
+        let fallbackFont = NSFont(name: "Helvetica", size: fallbackHeight) ?? .systemFont(ofSize: fallbackHeight)
+        var reported = fallbackFont
+        var color = NSColor.black
+        if let attributed = selection.attributedString, attributed.length > 0 {
+            let attributes = attributed.attributes(at: 0, effectiveRange: nil)
+            reported = (attributes[.font] as? NSFont) ?? fallbackFont
+            color = (attributes[.foregroundColor] as? NSColor) ?? .black
         }
-        let attributes = attributed.attributes(at: 0, effectiveRange: nil)
-        let font = (attributes[.font] as? NSFont) ?? fallbackFont
-        let color = (attributes[.foregroundColor] as? NSColor) ?? .black
-        return (font, color)
+        if let fromPage = PageFonts.font(on: page, near: bounds, size: reported.pointSize) {
+            return (fromPage, color)
+        }
+        return (PDFFontResolver.installedCounterpart(of: reported), color)
     }
 }
 

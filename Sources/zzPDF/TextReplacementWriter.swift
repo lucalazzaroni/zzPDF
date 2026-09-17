@@ -85,7 +85,15 @@ enum TextReplacementWriter {
     private static func draw(_ line: Line, in context: CGContext) {
         let text = line.text.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !text.isEmpty else { return }
-        let font = CTFontCreateWithName(line.font.fontName as CFString, line.font.pointSize, nil)
+        // From the descriptor, never from the name: a name that is not installed on this
+        // Mac — which is what a PDF's embedded subset fonts are called — resolves silently
+        // to Helvetica, and the replaced line comes out in a different typeface from the
+        // text around it.
+        let font = CTFontCreateWithFontDescriptor(
+            line.font.fontDescriptor as CTFontDescriptor,
+            line.font.pointSize,
+            nil
+        )
         let attributed = NSAttributedString(
             string: line.text,
             attributes: [.font: font, .foregroundColor: line.color]
