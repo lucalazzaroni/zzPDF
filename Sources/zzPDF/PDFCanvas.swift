@@ -291,7 +291,34 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     fileprivate func cursor(at point: CGPoint) -> NSCursor {
         guard page(for: point, nearest: false) != nil else { return .arrow }
+        if NSEvent.modifierFlags.contains(.command), link(at: point) != nil { return .pointingHand }
         return cursorForActiveTool
+    }
+
+    /// The link under `viewPoint`, if there is one there.
+    func link(at viewPoint: CGPoint) -> PDFAnnotation? {
+        guard let page = page(for: viewPoint, nearest: false) else { return nil }
+        let pagePoint = convert(viewPoint, to: page)
+        if let hit = page.annotation(at: pagePoint), hit.isSubtype(.link) { return hit }
+        // A link often sits under the reader's own annotations, and those are what
+        // annotation(at:) hands back.
+        return page.annotations.first { $0.isSubtype(.link) && $0.bounds.contains(pagePoint) }
+    }
+
+    /// Holding Command over a link turns the pointer and says where the link goes, so it is
+    /// clear the click will be taken as following it rather than as using the tool.
+    override func flagsChanged(with event: NSEvent) {
+        super.flagsChanged(with: event)
+        guard let window, window.isKeyWindow else { return }
+        let viewPoint = convert(window.mouseLocationOutsideOfEventStream, from: nil)
+        guard bounds.contains(viewPoint) else { return }
+        cursor(at: viewPoint).set()
+        guard let workspace else { return }
+        if event.modifierFlags.contains(.command),
+           let link = link(at: viewPoint),
+           let target = PDFLinkTarget.of(link) {
+            workspace.statusMessage = "Click to open \(target.summary)"
+        }
     }
 
     /// Tints the page for night or sepia reading.
@@ -452,6 +479,14 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         // one, so the click is handed to the editor instead.
         if let editor = activeInlineEditor, inlineEditorContains(viewPoint) {
             editor.handleClick(event)
+            return
+        }
+
+        // Command-click follows a link, whatever tool is in hand, so a reader does not have
+        // to put the tool down or go through the context menu to use the document's links.
+        if event.modifierFlags.contains(.command), let link = link(at: viewPoint) {
+            window?.makeFirstResponder(self)
+            workspace.followLink(link)
             return
         }
 

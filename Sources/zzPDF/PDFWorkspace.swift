@@ -280,6 +280,81 @@ final class PDFWorkspace: ObservableObject {
         self.recoveryStore.reserve(recoveryIdentifier)
     }
 
+    /// Follows a link the reader has Command-clicked, and says whether there was one.
+    ///
+    /// A link inside the document is followed straight away. A web or mail address is
+    /// handed to the system, as any reader does. Anything else is confirmed first: a PDF
+    /// can name a scheme that runs something, and the reader should see where a link goes
+    /// before it goes there.
+    @discardableResult
+    func followLink(_ annotation: PDFAnnotation) -> Bool {
+        guard let target = PDFLinkTarget.of(annotation) else { return false }
+        follow(target)
+        return true
+    }
+
+    func follow(_ target: PDFLinkTarget) {
+        switch target {
+        case .destination(let destination):
+            pdfView?.go(to: destination)
+            statusMessage = "Went to \(target.summary)"
+        case .web(let url):
+            NSWorkspace.shared.open(url)
+            statusMessage = "Opened \(url.absoluteString)"
+        case .external(let url):
+            guard confirmOpening(url) else {
+                statusMessage = "Left the link alone"
+                return
+            }
+            NSWorkspace.shared.open(url)
+            statusMessage = "Opened \(url.absoluteString)"
+        case .remote(let url, let pageIndex):
+            guard url.isFileURL, url.pathExtension.lowercased() == "pdf" else {
+                guard confirmOpening(url) else { return }
+                NSWorkspace.shared.open(url)
+                return
+            }
+            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+            if let pageIndex { statusMessage = "Opened \(url.lastPathComponent) at page \(pageIndex + 1)" }
+        case .command(let name):
+            perform(name)
+        }
+    }
+
+    private func perform(_ command: PDFActionNamedName) {
+        guard let pdfView else { return }
+        switch command {
+        case .nextPage: pdfView.goToNextPage(nil)
+        case .previousPage: pdfView.goToPreviousPage(nil)
+        case .firstPage: pdfView.goToFirstPage(nil)
+        case .lastPage: pdfView.goToLastPage(nil)
+        case .goBack: pdfView.goBack(nil)
+        case .goForward: pdfView.goForward(nil)
+        case .zoomIn: pdfView.zoomIn(nil)
+        case .zoomOut: pdfView.zoomOut(nil)
+        case .find: focusSearch()
+        case .print: printDocument()
+        // The page to go to is asked for by the viewer, and a link that asks for a page
+        // without naming one has nothing to act on.
+        case .goToPage, .none: break
+        @unknown default: break
+        }
+    }
+
+    /// Asks before opening a link that is not a web or mail address.
+    private func confirmOpening(_ url: URL) -> Bool {
+        let alert = NSAlert()
+        alert.alertStyle = .warning
+        alert.messageText = "Open this link?"
+        alert.informativeText = """
+        This document links to \(url.absoluteString), which is not a web address. \
+        Open it only if you trust the document.
+        """
+        alert.addButton(withTitle: "Open")
+        alert.addButton(withTitle: "Cancel")
+        return alert.runModal() == .alertFirstButtonReturn
+    }
+
     func openDocument() {
         let panel = NSOpenPanel()
         panel.allowedContentTypes = [.pdf]

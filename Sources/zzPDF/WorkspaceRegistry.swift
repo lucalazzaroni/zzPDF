@@ -20,6 +20,25 @@ final class WorkspaceRegistry: ObservableObject {
     private var restoreQueue: [RestoreItem] = []
     private var didOpenRestoreWindows = false
     private(set) var isTerminating = false
+    /// Asks SwiftUI for another window in the document group. Set by each window as it
+    /// appears, since only a view can reach the `openWindow` action.
+    var requestNewWindow: (() -> Void)?
+    private var openObserver: (any NSObjectProtocol)?
+
+    init() {
+        openObserver = NotificationCenter.default.addObserver(
+            forName: .zzPDFOpenDocument,
+            object: nil,
+            queue: .main
+        ) { [weak self] notification in
+            guard let url = notification.object as? URL else { return }
+            MainActor.assumeIsolated { self?.openDocument(at: url) }
+        }
+    }
+
+    deinit {
+        if let openObserver { NotificationCenter.default.removeObserver(openObserver) }
+    }
 
     /// What a window opened at launch should put on screen.
     enum RestoreItem {
@@ -65,6 +84,83 @@ final class WorkspaceRegistry: ObservableObject {
             host.tabbingIdentifier = window.tabbingIdentifier
             host.addTabbedWindow(window, ordered: .above)
             window.makeKeyAndOrderFront(nil)
+        }
+    }
+
+    /// One window, as far as deciding where to open a document is concerned.
+    struct Candidate: Equatable {
+        /// The file that window is showing, if it is showing a file.
+        let url: URL?
+        /// Whether it has nothing open in it at all.
+        let isEmpty: Bool
+    }
+
+    /// What to do with an open request.
+    enum OpenOutcome: Equatable {
+        /// The document is already on screen in this window; bring it forward.
+        case front(Int)
+        /// This window is empty, so the document goes in it.
+        case loadInto(Int)
+        /// Every window is taken; the document needs one of its own.
+        case newWindow
+    }
+
+    /// Where a document should open, given the windows already on screen in order of
+    /// preference. Kept apart from acting on it so the choice can be tested.
+    static func outcome(for url: URL, among candidates: [Candidate]) -> OpenOutcome {
+        let target = url.standardizedFileURL
+        if let index = candidates.firstIndex(where: { $0.url?.standardizedFileURL == target }) {
+            return .front(index)
+        }
+        if let index = candidates.firstIndex(where: \.isEmpty) {
+            return .loadInto(index)
+        }
+        return .newWindow
+    }
+
+    /// Opens a document that arrived from the Finder, a drop, or the recent-documents menu.
+    ///
+    /// Everything routes through here, and only here, because an open request reaches every
+    /// window at once: `onOpenURL` is part of the window's own view, and the notification it
+    /// posts is a broadcast. Letting each window act on it opened one new window for every
+    /// window already on screen.
+    func openDocument(at url: URL) {
+        let windows = orderedDocumentWindows()
+        let candidates = windows.map { Candidate(url: $0.workspace.fileURL, isEmpty: !$0.workspace.hasDocument) }
+        switch Self.outcome(for: url, among: candidates) {
+        case .front(let index):
+            // The file may already be open — at launch especially, where the window
+            // restoring last session's document and the file being opened are usually the
+            // same file. That is what put two windows of one document on screen, one
+            // restored at its old size and one new.
+            let window = windows[index].window
+            window.tabGroup?.selectedWindow = window
+            window.makeKeyAndOrderFront(nil)
+        case .loadInto(let index):
+            windows[index].workspace.load(url)
+            windows[index].window.makeKeyAndOrderFront(nil)
+        case .newWindow:
+            enqueueDocument(url)
+            requestNewWindow?()
+        }
+    }
+
+    /// The window already showing `url`, if any.
+    func window(showing url: URL) -> NSWindow? {
+        let target = url.standardizedFileURL
+        return orderedDocumentWindows()
+            .first { $0.workspace.fileURL?.standardizedFileURL == target }?
+            .window
+    }
+
+    /// Every window with a document in it, the key one first, since that is the one the
+    /// reader is looking at.
+    private func orderedDocumentWindows() -> [(window: NSWindow, workspace: PDFWorkspace)] {
+        let key = NSApp.keyWindow
+        let ordered = [key].compactMap { $0 } + NSApp.orderedWindows.filter { $0 !== key }
+        return ordered.compactMap { window in
+            guard let workspace = workspacesByWindow.object(forKey: window) else { return nil }
+            return (window, workspace)
         }
     }
 

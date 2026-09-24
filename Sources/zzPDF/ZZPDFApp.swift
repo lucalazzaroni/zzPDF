@@ -42,6 +42,7 @@ private struct DocumentWindow: View {
             .background(DocumentWindowAccessor(workspace: workspace, registry: registry))
             .onAppear {
                 registry.register(workspace)
+                registry.requestNewWindow = { openWindow(id: "document") }
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
                     return
@@ -51,15 +52,6 @@ private struct DocumentWindow: View {
                     workspace.restore(item)
                 }
                 registry.openWindowsForRemainingRestores { openWindow(id: $0) }
-            }
-            .onReceive(NotificationCenter.default.publisher(for: .zzPDFOpenDocument)) { notification in
-                guard let url = notification.object as? URL else { return }
-                guard workspace.hasDocument else {
-                    workspace.load(url)
-                    return
-                }
-                registry.enqueueDocument(url)
-                openWindow(id: "document")
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 registry.prepareForTermination()
