@@ -83,6 +83,39 @@ struct TextEditSmoke {
         // only there to make the edit live: what is left is page content, like the text
         // around it, which is what makes a replaced line look the same as its neighbours.
         let originalText = page.string ?? ""
+
+        // Two things have to hold for a commit to land, and when one of them stops holding
+        // the other looks like the culprit. They are checked apart so the log says which.
+        //
+        // First: drawing a line into a rebuilt page leaves it as text that can be read back
+        // out again, rather than as marks that merely look like text.
+        guard let probeFont = NSFont(name: "Helvetica", size: 12) else { fail("Helvetica is missing") }
+        let probe = TextReplacementWriter.Line(
+            cover: CGRect(x: 40, y: 100, width: 200, height: 16),
+            baseline: 104,
+            text: "Sonda",
+            font: probeFont,
+            color: .black
+        )
+        do {
+            let rebuilt = try TextReplacementWriter.rewrite(replacing: [probe], background: .white, on: page)
+            check(
+                (rebuilt.string ?? "").contains("Sonda"),
+                "A line drawn into a rebuilt page cannot be read back: the page says \"\((rebuilt.string ?? "").prefix(120))\""
+            )
+        } catch {
+            fail("A page holding one line could not be rebuilt: \(error)")
+        }
+
+        // Second: the edit really is carrying the text the reader typed, since that is what
+        // the writer draws — not the string handed to the commit.
+        workspace.previewTextEdit("Ciao mondo")
+        check(
+            replaced.contents == "Ciao mondo",
+            "The edit holds \"\(replaced.contents ?? "nothing")\" rather than what was typed"
+        )
+        check(replaced.font != nil, "The edit has no font, so nothing would be drawn")
+
         workspace.commitTextReplacement(replaced, text: "Ciao mondo")
         guard let committed = workspace.pdfDocument?.page(at: 0) else { fail("The page is gone") }
         check(

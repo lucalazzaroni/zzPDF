@@ -53,7 +53,10 @@ for suite in "${SUITES[@]}"; do
         continue
     fi
     "$binary" >/dev/null 2>"$BUILD_DIR/$suite.log" || true
-    echo "  $suite: $(tail -n 1 "$BUILD_DIR/$suite.log")"
+    # All of it, not the last line: a failure that spans lines says the most in the ones
+    # before the last, and on CI the log is the only thing there is to go on.
+    echo "  $suite failed:"
+    sed 's/^/    /' "$BUILD_DIR/$suite.log"
     FAILED+=("$suite")
 done
 
