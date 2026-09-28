@@ -170,6 +170,32 @@ struct OpenAndLinkSmoke {
             items.contains { if case .recovery = $0 { return true } else { return false } },
             "Opening a file by name threw away work that was never saved"
         )
+
+        // And it has somewhere to come back to. The file that was asked for takes the only
+        // window there is, so the unsaved work needs one of its own asked for — otherwise
+        // it is found, queued, and quietly never shown to anyone.
+        preferences.restoreLastDocument = false
+        preferences.sessionDocuments = []
+        let holder = PDFWorkspace(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: recoveryDirectory)
+        )
+        holder.load(makePDF(in: directory))
+        check(holder.hasDocument, "The window did not take the file it was asked for")
+
+        let launching = WorkspaceRegistry()
+        launching.register(holder)
+        var windowsAsked = 0
+        launching.requestNewWindow = { windowsAsked += 1 }
+        launching.prepare(
+            with: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: recoveryDirectory)
+        )
+        launching.finishLaunching()
+        check(
+            windowsAsked == 1,
+            "The recovered work was left with nowhere to go: \(windowsAsked) windows asked for"
+        )
     }
 
     // MARK: - Following a link
