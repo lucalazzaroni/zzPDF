@@ -195,12 +195,15 @@ enum FormFieldMatcher {
     private static func printedLabels(for annotation: PDFAnnotation, on page: PDFPage) -> [String] {
         let box = annotation.bounds
         guard box.width > 1, box.height > 1 else { return [] }
-        let inset = box.height * 0.25
+        // A little taller than the box, not shorter: a label is set in its own type and
+        // sits on its own baseline, so its glyphs routinely fall outside the field's
+        // rectangle. Reading only the middle of the band found nothing at all.
+        let margin = box.height * 0.35
         let toTheLeft = CGRect(
             x: box.minX - 260,
-            y: box.minY + inset,
+            y: box.minY - margin,
             width: 260,
-            height: max(1, box.height - inset * 2)
+            height: box.height + margin * 2
         )
         let above = CGRect(
             x: box.minX - 20,

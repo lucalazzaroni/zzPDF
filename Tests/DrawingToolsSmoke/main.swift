@@ -137,7 +137,10 @@ struct DrawingToolsSmoke {
             rewritten.annotations.count == drawingsBefore,
             "The page came back with \(rewritten.annotations.count) drawings instead of \(drawingsBefore)"
         )
-        check((rewritten.string ?? "").contains("Nuovo"), "The replacement is not on the page")
+        check(
+            (rewritten.string ?? "").contains("Nuovo"),
+            "The replacement is not on the page. \(workspace.lastErrorMessage ?? "No error was reported.")"
+        )
         workspace.undo()
         check(
             !((workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Nuovo")),

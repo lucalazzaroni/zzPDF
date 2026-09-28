@@ -187,6 +187,8 @@ final class PDFWorkspace: ObservableObject {
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
     @Published var showAutoFill = false
+    /// The last thing that went wrong, kept so a test can say what it was.
+    private(set) var lastErrorMessage: String?
     var autoFillCandidates: [FormFieldMatcher.Match] = []
     @Published var showFreeTextEditor = false
     @Published var ocrText = ""
@@ -2136,14 +2138,16 @@ final class PDFWorkspace: ObservableObject {
         for annotation in annotations { unlink(text: annotation) }
         selectedAnnotation = nil
 
-        guard index != NSNotFound,
-              !lines.isEmpty,
-              let rewritten = TextReplacementWriter.page(
+        let rewritten: PDFPage
+        do {
+            guard index != NSNotFound else { throw TextReplacementWriter.Failure.noLines }
+            rewritten = try TextReplacementWriter.rewrite(
                 replacing: lines,
                 background: session.background,
                 on: page
-              ) else {
-            presentError("The page could not be rewritten with the new text.")
+            )
+        } catch {
+            presentError("The page could not be rewritten with the new text: \(error).")
             isDirty = session.wasDirtyBefore
             pdfView?.needsDisplay = true
             return
@@ -3186,6 +3190,11 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func presentError(_ message: String) {
+        lastErrorMessage = message
+        statusMessage = message
+        // Only when there is someone to show it to. A modal alert in a test run, or in any
+        // other headless run, has no one to dismiss it.
+        guard NSApp?.isRunning == true else { return }
         let alert = NSAlert()
         alert.alertStyle = .warning
         alert.messageText = "zzPDF"

@@ -31,15 +31,45 @@ enum TextReplacementWriter {
         background: NSColor,
         on page: PDFPage
     ) -> PDFPage? {
-        guard !lines.isEmpty else { return nil }
+        try? rewrite(replacing: lines, background: background, on: page)
+    }
+
+    /// Why a page could not be rebuilt. Saying which step gave up is the difference between
+    /// a fixable report and "it did not work".
+    enum Failure: Error, CustomStringConvertible {
+        case noLines
+        case degeneratePage(CGSize)
+        case noContext
+        case unreadable(bytes: Int)
+        case noPage(bytes: Int)
+
+        var description: String {
+            switch self {
+            case .noLines: return "no lines to write"
+            case .degeneratePage(let size): return "the page measures \(size)"
+            case .noContext: return "a PDF context could not be created"
+            case .unreadable(let bytes): return "the \(bytes)-byte rewrite could not be reopened"
+            case .noPage(let bytes): return "the \(bytes)-byte rewrite came back with no page"
+            }
+        }
+    }
+
+    static func rewrite(
+        replacing lines: [Line],
+        background: NSColor,
+        on page: PDFPage
+    ) throws -> PDFPage {
+        guard !lines.isEmpty else { throw Failure.noLines }
         let box = PDFDisplayBox.cropBox
         let bounds = page.bounds(for: box)
-        guard bounds.width > 1, bounds.height > 1 else { return nil }
+        guard bounds.width > 1, bounds.height > 1 else { throw Failure.degeneratePage(bounds.size) }
 
         var mediaBox = CGRect(origin: .zero, size: bounds.size)
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
-              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else { return nil }
+              let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
+            throw Failure.noContext
+        }
 
         context.beginPDFPage(nil)
 
@@ -64,8 +94,12 @@ enum TextReplacementWriter {
         context.endPDFPage()
         context.closePDF()
 
-        guard let document = PDFDocument(data: data as Data),
-              let rewritten = document.page(at: 0) else { return nil }
+        guard let document = PDFDocument(data: data as Data) else {
+            throw Failure.unreadable(bytes: data.length)
+        }
+        guard let rewritten = document.page(at: 0) else {
+            throw Failure.noPage(bytes: data.length)
+        }
         rewritten.rotation = page.rotation
         return rewritten
     }

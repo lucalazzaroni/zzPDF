@@ -121,7 +121,7 @@ struct PageSelectionSmoke {
         check(entries.allSatisfy { $0.pageIndex == 0 }, "The annotation list reports the wrong page")
         check(
             (workspace.pdfDocument?.page(at: 0)?.string ?? "").contains("Uno"),
-            "The replaced text is not part of the page"
+            "The replaced text is not part of the page. \(workspace.lastErrorMessage ?? "No error was reported.")"
         )
 
         // Splitting writes one file per part, covering every page exactly once.

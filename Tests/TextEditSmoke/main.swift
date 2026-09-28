@@ -91,7 +91,10 @@ struct TextEditSmoke {
         )
         check(
             (committed.string ?? "").contains("Ciao mondo"),
-            "The new text is not part of the page: \"\(committed.string ?? "")\""
+            """
+            The new text is not part of the page: "\(committed.string ?? "")". \
+            \(workspace.lastErrorMessage ?? "No error was reported.")
+            """
         )
         check(
             !workspace.pdfDocument!.findString("Ciao mondo", withOptions: []).isEmpty,
