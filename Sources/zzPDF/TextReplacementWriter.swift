@@ -1,4 +1,5 @@
 import AppKit
+import ObjectiveC
 import PDFKit
 
 /// Writes a finished text replacement into the page itself.
@@ -114,7 +115,21 @@ enum TextReplacementWriter {
             throw Failure.noPage(bytes: written.count)
         }
         rewritten.rotation = page.rotation
+        keep(document, alive: rewritten)
         return rewritten
+    }
+
+    private static var sourceDocumentKey: UInt8 = 0
+
+    /// Holds a rebuilt page's document for as long as the page itself is around.
+    ///
+    /// A PDFPage reads its content through the document it came from, and only keeps a weak
+    /// hold on it. Let the document go and the page is still there, still the right size,
+    /// still in the right place — and empty the moment anything asks it to draw or writes
+    /// it out to a file. That is how a replaced line survived on screen and came back blank
+    /// from a document that had been split.
+    private static func keep(_ document: PDFDocument, alive page: PDFPage) {
+        objc_setAssociatedObject(page, &sourceDocumentKey, document, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 
     /// One page of PDF, drawn by `body`.

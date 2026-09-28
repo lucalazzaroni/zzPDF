@@ -145,6 +145,21 @@ struct TextEditSmoke {
             workspace.pdfDocument!.findString("Hello Acrobat World", withOptions: []).isEmpty,
             "Find still turns up the line that was replaced"
         )
+        // It has to survive being written out, not just look right in the window. A rebuilt
+        // page reads its content through the document it was built from, and a page whose
+        // document has gone comes back blank from a file.
+        let saved = directory.appendingPathComponent("salvato.pdf")
+        check(workspace.pdfDocument?.write(to: saved) == true, "The document could not be written out")
+        guard let reopened = PDFDocument(url: saved)?.page(at: 0) else { fail("The saved file has no page") }
+        check(
+            (reopened.string ?? "").contains("Ciao mondo"),
+            "The replacement did not survive being saved: \"\(reopened.string ?? "")\""
+        )
+        check(
+            !(reopened.string ?? "").contains("Hello Acrobat World"),
+            "The replaced line came back in the saved file: \"\(reopened.string ?? "")\""
+        )
+
         check(workspace.isDirty, "Replacing page text did not mark the document as edited")
         check(workspace.canUndo, "Replacing page text registered no undo step")
 

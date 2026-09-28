@@ -15,7 +15,12 @@ struct ContentStreamSmoke {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         let generated = rebuild(makePDF(in: directory))
-        check(ContentStreamEditor.contentsObject(in: generated) == 4, "The content stream was not found")
+        // Which object number it lands on is Core Graphics' business and differs between
+        // releases; that it is found at all is this app's.
+        guard let contents = ContentStreamEditor.contentsObject(in: generated) else {
+            fail("The content stream was not found")
+        }
+        check(contents > 0, "The content stream is object \(contents)")
         guard let stream = ContentStreamEditor.decodedContentStream(of: generated) else {
             fail("The content stream could not be decoded")
         }
