@@ -7,6 +7,8 @@ extension Notification.Name {
     static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
     /// Posted when a window gains or loses its document.
     static let zzPDFDocumentStateChanged = Notification.Name("zzPDFDocumentStateChanged")
+    /// Posted once AppKit has finished launching the app.
+    static let zzPDFDidFinishLaunching = Notification.Name("zzPDFDidFinishLaunching")
 }
 
 
@@ -21,12 +23,19 @@ final class WorkspaceRegistry: ObservableObject {
     @Published private var pendingDocumentURLs: [URL] = []
     @Published private var restoreQueue: [RestoreItem] = []
     private var didOpenRestoreWindows = false
+    /// Cleared once AppKit says the launch is over, which is the first moment the app can
+    /// know whether it was started to open a file.
+    @Published private(set) var isLaunching = true
+    private var openedDuringLaunch = false
+    private weak var preferences: AppPreferences?
+    private var recoveryStore: TemporaryRecoveryStore?
     private(set) var isTerminating = false
     /// Asks SwiftUI for another window in the document group. Set by each window as it
     /// appears, since only a view can reach the `openWindow` action.
     var requestNewWindow: (() -> Void)?
     private var openObserver: (any NSObjectProtocol)?
     private var documentObserver: (any NSObjectProtocol)?
+    private var launchObserver: (any NSObjectProtocol)?
     /// How many windows have something open in them.
     @Published private(set) var openDocumentCount = 0
 
@@ -38,6 +47,13 @@ final class WorkspaceRegistry: ObservableObject {
         ) { [weak self] notification in
             guard let url = notification.object as? URL else { return }
             MainActor.assumeIsolated { self?.openDocument(at: url) }
+        }
+        launchObserver = NotificationCenter.default.addObserver(
+            forName: .zzPDFDidFinishLaunching,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated { self?.applicationDidFinishLaunching() }
         }
         documentObserver = NotificationCenter.default.addObserver(
             forName: .zzPDFDocumentStateChanged,
@@ -54,6 +70,7 @@ final class WorkspaceRegistry: ObservableObject {
     deinit {
         if let openObserver { NotificationCenter.default.removeObserver(openObserver) }
         if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
+        if let launchObserver { NotificationCenter.default.removeObserver(launchObserver) }
     }
 
     /// What a window opened at launch should put on screen.
@@ -141,6 +158,7 @@ final class WorkspaceRegistry: ObservableObject {
     /// posts is a broadcast. Letting each window act on it opened one new window for every
     /// window already on screen.
     func openDocument(at url: URL) {
+        if isLaunching { openedDuringLaunch = true }
         let candidates = orderedWorkspaces()
         switch Self.outcome(for: url, among: candidates.map {
             Candidate(url: $0.fileURL, isEmpty: !$0.hasDocument)
@@ -182,7 +200,9 @@ final class WorkspaceRegistry: ObservableObject {
     /// already sitting there.
     private func orderedWorkspaces() -> [PDFWorkspace] {
         let known = workspaces.allObjects
-        guard let key = NSApp.keyWindow, let first = workspacesByWindow.object(forKey: key) else {
+        // NSApp is nil outside a running application, as in a test, and reaching through it
+        // would take the whole process down.
+        guard let key = NSApp?.keyWindow, let first = workspacesByWindow.object(forKey: key) else {
             return known
         }
         return [first] + known.filter { $0 !== first }
@@ -190,7 +210,7 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// The window showing `workspace`, once SwiftUI has got round to telling us about it.
     private func window(for workspace: PDFWorkspace) -> NSWindow? {
-        NSApp.orderedWindows.first { workspacesByWindow.object(forKey: $0) === workspace }
+        (NSApp?.orderedWindows ?? []).first { workspacesByWindow.object(forKey: $0) === workspace }
     }
 
     /// Queues a file for the next window to open, so a document arriving from the Finder
@@ -208,6 +228,50 @@ final class WorkspaceRegistry: ObservableObject {
         pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
     }
 
+    /// Told by the first window, which is where the preferences are to hand.
+    func prepare(with preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore = .shared) {
+        guard self.preferences == nil else { return }
+        self.preferences = preferences
+        self.recoveryStore = recoveryStore
+    }
+
+    /// AppKit has finished launching the app, so what it was launched for is now known.
+    ///
+    /// Nothing can be known earlier: the window is on screen a tenth of a second before
+    /// this, and the file a reader double-clicked arrives in between. Waiting until here
+    /// costs nothing a reader can see and is the difference between reopening last
+    /// session's documents and not.
+    func applicationDidFinishLaunching() {
+        // A turn later, so anything already queued for this one — the file being opened —
+        // has landed first.
+        DispatchQueue.main.async { [weak self] in self?.finishLaunching() }
+    }
+
+    func finishLaunching() {
+        guard isLaunching else { return }
+        isLaunching = false
+        guard let preferences else { return }
+        // A file was asked for by name, so that is what the reader wants open, and last
+        // session's documents stay shut. Work that was never saved is a different matter
+        // and comes back either way.
+        prepareRestoreQueue(
+            preferences: preferences,
+            recoveryStore: recoveryStore,
+            includingLastSession: !openedDuringLaunch
+        )
+        handOutRestores()
+    }
+
+    /// Gives each queued document to a window with nothing in it, and asks for more windows
+    /// when they run out.
+    private func handOutRestores() {
+        for workspace in orderedWorkspaces() where !workspace.hasDocument {
+            guard let item = nextRestoreItem() else { return }
+            workspace.restore(item)
+        }
+        openWindowsForRemainingRestores { requestNewWindow?() }
+    }
+
     /// Whether a window with nothing open in it should offer the welcome screen.
     ///
     /// Only when the app has nothing at all: no document in any window, nothing on its way
@@ -215,7 +279,8 @@ final class WorkspaceRegistry: ObservableObject {
     /// A window that happens to be empty beside one holding a document is not an invitation
     /// to start something — the reader is already reading.
     var shouldOfferWelcome: Bool {
-        openDocumentCount == 0
+        !isLaunching
+            && openDocumentCount == 0
             && pendingDocumentURLs.isEmpty
             && restoreQueue.isEmpty
     }
@@ -230,12 +295,16 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Works out everything the app should reopen: unsaved work waiting in the recovery
     /// store first, then the documents that were on screen when it last quit. Runs once.
-    func prepareRestoreQueue(preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore? = nil) {
+    func prepareRestoreQueue(
+        preferences: AppPreferences,
+        recoveryStore: TemporaryRecoveryStore? = nil,
+        includingLastSession: Bool = true
+    ) {
         guard shouldRestoreInitialWindow() else { return }
         let store = recoveryStore ?? .shared
         let recoveries = preferences.temporaryAutosave ? store.pendingRecords() : []
         restoreQueue = Array(repeating: .recovery, count: recoveries.count)
-        guard preferences.restoreLastDocument else { return }
+        guard includingLastSession, preferences.restoreLastDocument else { return }
         let recovered = Set(recoveries.compactMap(\.originalPath))
         for document in preferences.sessionDocuments
         where !recovered.contains(document.path) && FileManager.default.fileExists(atPath: document.path) {
@@ -248,10 +317,10 @@ final class WorkspaceRegistry: ObservableObject {
     }
 
     /// Opens one window for every document still waiting, once the first one is showing.
-    func openWindowsForRemainingRestores(_ openWindow: (String) -> Void) {
+    func openWindowsForRemainingRestores(_ openWindow: () -> Void) {
         guard !didOpenRestoreWindows else { return }
         didOpenRestoreWindows = true
-        for _ in restoreQueue { openWindow("document") }
+        for _ in restoreQueue { openWindow() }
     }
 
     func applyPreferencesToOpenDocuments() {
@@ -276,7 +345,7 @@ final class WorkspaceRegistry: ObservableObject {
     /// wins. Without this a window closed earlier could have cleared the stored session
     /// while another document was still open.
     private func rememberFrontmostSession() {
-        for window in NSApp.orderedWindows.reversed() {
+        for window in (NSApp?.orderedWindows ?? []).reversed() {
             workspacesByWindow.object(forKey: window)?.rememberSessionForTermination()
         }
     }

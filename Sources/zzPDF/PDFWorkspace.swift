@@ -196,7 +196,8 @@ final class PDFWorkspace: ObservableObject {
     /// double-clicked arrives a moment after the window does — about a third of a second,
     /// measured. A window that offered the welcome screen the instant it appeared put it up
     /// in front of the document on its way in. It waits a beat instead. Per window, not per
-    /// app: a new empty window must not blank the ones already on screen.
+    /// app: a new empty window must not blank the ones already on screen. A sixth of a
+    /// second, which covers it without being a wait anyone notices.
     @Published private(set) var isSettling = true
     /// The last thing that went wrong, kept so a test can say what it was.
     private(set) var lastErrorMessage: String?
@@ -373,7 +374,7 @@ final class PDFWorkspace: ObservableObject {
     /// Starts the beat a new window waits before it offers the welcome screen.
     func settleAfterAppearing() {
         guard isSettling else { return }
-        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.15) { [weak self] in
             self?.isSettling = false
         }
     }

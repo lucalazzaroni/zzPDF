@@ -77,13 +77,18 @@ struct OpenAndLinkSmoke {
         let preferences = AppPreferences(defaults: defaults)
         let store = TemporaryRecoveryStore(directoryURL: directory.appendingPathComponent("R"))
 
-        // With nothing open, nothing arriving and nothing to reopen, the welcome screen is
-        // the right thing to show.
+        // Nothing is offered while the app is still starting: the file a reader
+        // double-clicked arrives after the window does, so the app waits until AppKit says
+        // the launch is over before deciding it has nothing to show.
         let idle = WorkspaceRegistry()
+        check(!idle.shouldOfferWelcome, "The welcome screen was offered mid-launch")
+        idle.prepare(with: preferences, recoveryStore: store)
+        idle.finishLaunching()
         check(idle.shouldOfferWelcome, "The welcome screen never appeared with nothing to open")
 
         // A file on its way into a window keeps it away, until the window takes it.
         let opening = WorkspaceRegistry()
+        opening.finishLaunching()
         opening.enqueueDocument(directory.appendingPathComponent("uno.pdf"))
         check(!opening.shouldOfferWelcome, "The welcome screen was offered with a file waiting")
         check(opening.dequeueDocument() != nil, "The queued file could not be claimed")
@@ -92,6 +97,7 @@ struct OpenAndLinkSmoke {
         // The same file handed over twice is queued once, or the second copy would keep the
         // welcome screen away for good.
         let twice = WorkspaceRegistry()
+        twice.finishLaunching()
         let url = directory.appendingPathComponent("uno.pdf")
         twice.enqueueDocument(url)
         twice.enqueueDocument(URL(fileURLWithPath: url.path))
@@ -107,6 +113,7 @@ struct OpenAndLinkSmoke {
             AppPreferences.SessionDocument(path: file.path, pageIndex: 0, zoom: 1, layout: "continuous")
         ]
         let restoring = WorkspaceRegistry()
+        restoring.finishLaunching()
         restoring.prepareRestoreQueue(preferences: preferences, recoveryStore: store)
         check(!restoring.shouldOfferWelcome, "The welcome screen was offered over a document reopening")
         check(restoring.nextRestoreItem() != nil, "Nothing was queued to reopen")
@@ -115,6 +122,7 @@ struct OpenAndLinkSmoke {
         // A window with nothing in it beside one holding a document is not an invitation to
         // start something: the reader is already reading.
         let reading = WorkspaceRegistry()
+        reading.finishLaunching()
         let busy = PDFWorkspace(preferences: preferences, recoveryStore: store)
         let empty = PDFWorkspace(preferences: preferences, recoveryStore: store)
         reading.register(busy)
@@ -124,9 +132,44 @@ struct OpenAndLinkSmoke {
         check(busy.hasDocument, "The fixture did not open")
         check(!reading.shouldOfferWelcome, "The welcome screen was offered beside an open document")
 
-        // A window only just opened waits a beat before offering it, since the file a
-        // reader double-clicked arrives after the window does.
+        // A window only just opened waits a moment before offering it, since a file opened
+        // while the app is already running reaches its window just after the window exists.
         check(empty.isSettling, "A new window was ready to offer the welcome screen at once")
+
+        // Opening a file by name means that file, not that file and everything that
+        // happened to be open last time. Work that was never saved is not last time's
+        // business and comes back regardless, which is the whole point of keeping it.
+        let recoveryDirectory = directory.appendingPathComponent("Recovered")
+        let recovery = TemporaryRecoveryStore(directoryURL: recoveryDirectory)
+        preferences.temporaryAutosave = true
+        let unsaved = PDFWorkspace(preferences: preferences, recoveryStore: recovery)
+        unsaved.load(makePDF(in: directory))
+        guard let first = unsaved.pdfDocument?.page(at: 0) else { fail("The fixture has no page") }
+        unsaved.activeTool = .rectangle
+        unsaved.addAnnotation(
+            at: CGPoint(x: 40, y: 40),
+            on: first,
+            dragPoints: [CGPoint(x: 40, y: 40), CGPoint(x: 140, y: 110)]
+        )
+        check(unsaved.isDirty, "The edited fixture is not marked as edited")
+        unsaved.flushTemporaryAutosave()
+
+        let asked = WorkspaceRegistry()
+        asked.prepareRestoreQueue(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: recoveryDirectory),
+            includingLastSession: false
+        )
+        var items: [WorkspaceRegistry.RestoreItem] = []
+        while let item = asked.nextRestoreItem() { items.append(item) }
+        check(
+            !items.contains { if case .session = $0 { return true } else { return false } },
+            "Opening a file by name reopened last session's documents as well"
+        )
+        check(
+            items.contains { if case .recovery = $0 { return true } else { return false } },
+            "Opening a file by name threw away work that was never saved"
+        )
     }
 
     // MARK: - Following a link

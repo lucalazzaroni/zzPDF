@@ -1,8 +1,20 @@
 import AppKit
 import SwiftUI
 
+/// Tells the registry when AppKit has finished launching.
+///
+/// That moment is the first at which the app can tell a plain launch from one that was
+/// asked to open a file: SwiftUI takes the open event itself and reports it through
+/// `onOpenURL`, which lands just before this.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        NotificationCenter.default.post(name: .zzPDFDidFinishLaunching, object: nil)
+    }
+}
+
 @main
 struct ZZPDFApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var preferences = AppPreferences()
     @StateObject private var registry = WorkspaceRegistry()
 
@@ -44,16 +56,15 @@ private struct DocumentWindow: View {
             .onAppear {
                 registry.register(workspace)
                 registry.requestNewWindow = { openWindow(id: "document") }
+                registry.prepare(with: preferences)
                 workspace.settleAfterAppearing()
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
                     return
                 }
-                registry.prepareRestoreQueue(preferences: preferences)
                 if let item = registry.nextRestoreItem() {
                     workspace.restore(item)
                 }
-                registry.openWindowsForRemainingRestores { openWindow(id: $0) }
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 registry.prepareForTermination()
