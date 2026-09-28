@@ -64,44 +64,74 @@ enum TextReplacementWriter {
         let bounds = page.bounds(for: box)
         guard bounds.width > 1, bounds.height > 1 else { throw Failure.degeneratePage(bounds.size) }
 
-        var mediaBox = CGRect(origin: .zero, size: bounds.size)
+        // It takes two passes, because the new text goes exactly where the old text was and
+        // the two cannot be told apart once they are both in the stream.
+        //
+        // The first pass redraws the page and paints over each run being replaced, and the
+        // old runs are then taken out of the content stream — not merely hidden, or Find
+        // would still turn them up and a copied page would give the old line and the new
+        // one shuffled together. The second pass puts the new text onto that cleaned page.
+        let covered = try render(size: bounds.size) { context in
+            // PDFPage.draw applies the page's rotation; undoing it first leaves the content
+            // in the page's own coordinates, where the replacement already lives. The undo
+            // is its own state, rather than a second concatenation, so a page whose
+            // transform cannot be inverted does not drag the covers along with it.
+            context.saveGState()
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            context.concatenate(page.transform(for: box).inverted())
+            let visibility = page.annotations.map { ($0, $0.shouldDisplay) }
+            for (annotation, _) in visibility { annotation.shouldDisplay = false }
+            page.draw(with: box, to: context)
+            for (annotation, wasVisible) in visibility { annotation.shouldDisplay = wasVisible }
+            context.restoreGState()
+
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            context.setFillColor(background.cgColor)
+            for line in lines { context.fill(line.cover) }
+        }
+
+        let holes = lines.map { $0.cover.offsetBy(dx: -bounds.minX, dy: -bounds.minY) }
+        let cleaned = ContentStreamEditor.removingText(inside: holes, from: covered) ?? covered
+        guard let cleanDocument = PDFDocument(data: cleaned) else {
+            throw Failure.unreadable(bytes: cleaned.count)
+        }
+        guard let cleanPage = cleanDocument.page(at: 0) else {
+            throw Failure.noPage(bytes: cleaned.count)
+        }
+
+        // The cleaned page is already upright and already starts at the origin, so the new
+        // text goes on in the page's own coordinates, shifted to match.
+        let written = try render(size: bounds.size) { context in
+            cleanPage.draw(with: box, to: context)
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            for line in lines { draw(line, in: context) }
+        }
+
+        guard let document = PDFDocument(data: written) else {
+            throw Failure.unreadable(bytes: written.count)
+        }
+        guard let rewritten = document.page(at: 0) else {
+            throw Failure.noPage(bytes: written.count)
+        }
+        rewritten.rotation = page.rotation
+        return rewritten
+    }
+
+    /// One page of PDF, drawn by `body`.
+    private static func render(size: CGSize, body: (CGContext) -> Void) throws -> Data {
+        var mediaBox = CGRect(origin: .zero, size: size)
         let data = NSMutableData()
         guard let consumer = CGDataConsumer(data: data as CFMutableData),
               let context = CGContext(consumer: consumer, mediaBox: &mediaBox, nil) else {
             throw Failure.noContext
         }
-
         context.beginPDFPage(nil)
-
-        // PDFPage.draw applies the page's rotation; undoing it first leaves the content in
-        // the page's own coordinates, where the replacement and the annotations already live.
         context.saveGState()
-        context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        context.concatenate(page.transform(for: box).inverted())
-        let visibility = page.annotations.map { ($0, $0.shouldDisplay) }
-        for (annotation, _) in visibility { annotation.shouldDisplay = false }
-        page.draw(with: box, to: context)
-        for (annotation, wasVisible) in visibility { annotation.shouldDisplay = wasVisible }
+        body(context)
         context.restoreGState()
-
-        context.saveGState()
-        context.translateBy(x: -bounds.minX, y: -bounds.minY)
-        context.setFillColor(background.cgColor)
-        for line in lines { context.fill(line.cover) }
-        for line in lines { draw(line, in: context) }
-        context.restoreGState()
-
         context.endPDFPage()
         context.closePDF()
-
-        guard let document = PDFDocument(data: data as Data) else {
-            throw Failure.unreadable(bytes: data.length)
-        }
-        guard let rewritten = document.page(at: 0) else {
-            throw Failure.noPage(bytes: data.length)
-        }
-        rewritten.rotation = page.rotation
-        return rewritten
+        return data as Data
     }
 
     /// Moves the reader's annotations from the page that was rewritten onto its replacement.

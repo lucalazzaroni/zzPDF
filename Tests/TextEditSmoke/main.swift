@@ -133,6 +133,18 @@ struct TextEditSmoke {
             !workspace.pdfDocument!.findString("Ciao mondo", withOptions: []).isEmpty,
             "The new text is not searchable"
         )
+        // The line that was replaced is gone from the page, not merely hidden under the
+        // rectangle covering it. Left in, it still answers Find, still comes out when the
+        // page is copied, and — sitting exactly under the replacement — comes out
+        // interleaved with it, a character of each.
+        check(
+            !(committed.string ?? "").contains("Hello Acrobat World"),
+            "The replaced line is still in the page: \"\(committed.string ?? "")\""
+        )
+        check(
+            workspace.pdfDocument!.findString("Hello Acrobat World", withOptions: []).isEmpty,
+            "Find still turns up the line that was replaced"
+        )
         check(workspace.isDirty, "Replacing page text did not mark the document as edited")
         check(workspace.canUndo, "Replacing page text registered no undo step")
 
