@@ -1255,3 +1255,94 @@ struct ComparisonSheet: View {
         .frame(width: 620)
     }
 }
+
+/// Shows what is about to be written into a form, and lets the reader drop any of it.
+///
+/// A form is filled in from matched names, and a match can be wrong, so nothing is written
+/// until the reader has seen the field, the detail it was matched to, and what it will say.
+struct AutoFillSheet: View {
+    @EnvironmentObject private var workspace: PDFWorkspace
+    @Environment(\.dismiss) private var dismiss
+    @State private var chosen: Set<Int> = []
+
+    private var matches: [FormFieldMatcher.Match] { workspace.autoFillCandidates }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("Fill in this form")
+                    .font(.title3.weight(.semibold))
+                Text("\(matches.count) field\(matches.count == 1 ? "" : "s") in this document match your details.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+            }
+
+            ScrollView {
+                VStack(spacing: 0) {
+                    ForEach(Array(matches.enumerated()), id: \.offset) { index, match in
+                        Toggle(isOn: binding(for: index)) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                HStack(spacing: 6) {
+                                    Text(match.fieldLabel)
+                                        .fontWeight(.medium)
+                                        .lineLimit(1)
+                                    Text("page \(match.pageIndex + 1)")
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                }
+                                HStack(spacing: 6) {
+                                    Text(match.detailLabel)
+                                        .font(.caption)
+                                        .foregroundStyle(.secondary)
+                                    Image(systemName: "arrow.right")
+                                        .font(.caption2)
+                                        .foregroundStyle(.secondary)
+                                    Text(match.newValue)
+                                        .font(.caption)
+                                        .lineLimit(1)
+                                }
+                                if !match.currentValue.isEmpty {
+                                    Text("replaces “\(match.currentValue)”")
+                                        .font(.caption2)
+                                        .foregroundStyle(.orange)
+                                }
+                            }
+                        }
+                        .toggleStyle(.checkbox)
+                        .padding(.vertical, 6)
+                        Divider()
+                    }
+                }
+            }
+            .frame(height: 260)
+            .padding(.horizontal, 10)
+            .background(RoundedRectangle(cornerRadius: 8).fill(Color(nsColor: .textBackgroundColor)))
+
+            HStack {
+                Button("Select All") { chosen = Set(matches.indices) }
+                Button("Select None") { chosen = [] }
+                Spacer()
+                Button("Cancel") { dismiss() }
+                    .keyboardShortcut(.cancelAction)
+                Button("Fill \(chosen.count) Field\(chosen.count == 1 ? "" : "s")") {
+                    workspace.applyAutoFill(chosen.sorted().map { matches[$0] })
+                    dismiss()
+                }
+                .keyboardShortcut(.defaultAction)
+                .disabled(chosen.isEmpty)
+            }
+        }
+        .padding(20)
+        .frame(width: 520)
+        .onAppear { chosen = Set(matches.indices) }
+    }
+
+    private func binding(for index: Int) -> Binding<Bool> {
+        Binding(
+            get: { chosen.contains(index) },
+            set: { isOn in
+                if isOn { chosen.insert(index) } else { chosen.remove(index) }
+            }
+        )
+    }
+}

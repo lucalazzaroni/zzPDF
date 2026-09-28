@@ -26,6 +26,7 @@ final class AppPreferences: ObservableObject {
         static let signatureImage = "signatureImage"
         static let sessionDocuments = "sessionDocuments"
         static let recentDocuments = "recentDocuments"
+        static let personalProfile = "personalProfile"
     }
 
     private let defaults: UserDefaults
@@ -90,6 +91,10 @@ final class AppPreferences: ObservableObject {
         confirmPageDeletion = defaults.bool(forKey: Key.confirmPageDeletion)
         confirmFlattenedExport = defaults.bool(forKey: Key.confirmFlattenedExport)
         exportFolderPath = defaults.string(forKey: Key.exportFolderPath) ?? ""
+        if let data = defaults.data(forKey: Key.personalProfile),
+           let stored = try? JSONDecoder().decode(PersonalProfile.self, from: data) {
+            personalProfile = stored
+        }
     }
 
     /// A drawn signature, stored as one array of interleaved x/y coordinates per stroke,
@@ -151,6 +156,14 @@ final class AppPreferences: ObservableObject {
     }
 
     /// One entry per document that was open when the app last quit, frontmost first.
+    /// The reader's own details, for filling in forms.
+    @Published var personalProfile: PersonalProfile = PersonalProfile() {
+        didSet {
+            guard let data = try? JSONEncoder().encode(personalProfile) else { return }
+            defaults.set(data, forKey: Key.personalProfile)
+        }
+    }
+
     struct SessionDocument: Codable, Equatable {
         var path: String
         var pageIndex: Int

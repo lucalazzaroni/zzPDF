@@ -13,6 +13,9 @@ struct SettingsView: View {
                 .tabItem { Label("Editing", systemImage: "pencil.and.outline") }
             exportSettings
                 .tabItem { Label("Export", systemImage: "square.and.arrow.up") }
+            PersonalDetailsSettings()
+                .environmentObject(preferences)
+                .tabItem { Label("My Details", systemImage: "person.text.rectangle") }
         }
         .frame(width: 520, height: 390)
         .padding(20)
@@ -154,5 +157,56 @@ struct SettingsView: View {
 
     private func applyPreferences() {
         registry.applyPreferencesToOpenDocuments()
+    }
+}
+
+
+/// The details a form can be filled in from.
+///
+/// They live in the app's preferences, on this Mac. Bank and card details are deliberately
+/// not offered as fields of their own: those belong in a password manager.
+struct PersonalDetailsSettings: View {
+    @EnvironmentObject private var preferences: AppPreferences
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 0) {
+            Text("Used by Forms → Fill from My Details. Leave anything you would rather not store empty.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .padding(.bottom, 10)
+            Form {
+                Section {
+                    ForEach(ProfileField.allCases) { field in
+                        TextField(field.label, text: binding(for: field))
+                    }
+                }
+                Section("Your own fields") {
+                    ForEach($preferences.personalProfile.custom) { $entry in
+                        HStack(spacing: 8) {
+                            TextField("Name", text: $entry.name)
+                                .frame(width: 150)
+                            TextField("Value", text: $entry.value)
+                            Button {
+                                preferences.personalProfile.custom.removeAll { $0.id == entry.id }
+                            } label: {
+                                Image(systemName: "minus.circle")
+                            }
+                            .buttonStyle(.plain)
+                        }
+                    }
+                    Button("Add a field") {
+                        preferences.personalProfile.custom.append(PersonalProfile.CustomEntry())
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
+    }
+
+    private func binding(for field: ProfileField) -> Binding<String> {
+        Binding(
+            get: { preferences.personalProfile[field] },
+            set: { preferences.personalProfile[field] = $0 }
+        )
     }
 }

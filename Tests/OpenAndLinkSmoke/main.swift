@@ -12,6 +12,7 @@ struct OpenAndLinkSmoke {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         openRequests(in: directory)
+        welcome(in: directory)
         links(in: directory)
         print("Open request and link smoke test passed.")
     }
@@ -64,6 +65,59 @@ struct OpenAndLinkSmoke {
             WorkspaceRegistry.outcome(for: first, among: mixed) == .front(1),
             "An empty window was filled although the document was already open"
         )
+    }
+
+    // MARK: - When the welcome screen is offered
+
+    private static func welcome(in directory: URL) {
+        let suiteName = "it.lucalazzaroni.zzpdf.tests.welcome.\(UUID().uuidString)"
+        let defaults = UserDefaults(suiteName: suiteName)!
+        defaults.removePersistentDomain(forName: suiteName)
+        defer { defaults.removePersistentDomain(forName: suiteName) }
+        let preferences = AppPreferences(defaults: defaults)
+
+        // While the app is still starting up, an empty window shows nothing rather than the
+        // welcome screen: its body is rendered before it is told what to open, and the
+        // reader who double-clicked a PDF should not watch a welcome screen come and go.
+        let starting = WorkspaceRegistry()
+        check(!starting.shouldOfferWelcome, "The welcome screen was offered while the app was starting")
+        starting.windowDidSettle()
+        check(starting.shouldOfferWelcome, "The welcome screen never appeared with nothing to open")
+
+        // A file on its way into a window keeps it away.
+        let opening = WorkspaceRegistry()
+        opening.windowDidSettle()
+        opening.enqueueDocument(directory.appendingPathComponent("uno.pdf"))
+        check(!opening.shouldOfferWelcome, "The welcome screen was offered with a file waiting")
+        check(opening.dequeueDocument() != nil, "The queued file could not be claimed")
+        check(opening.shouldOfferWelcome, "The welcome screen stayed away after the file was claimed")
+
+        // The same file handed over twice — once by the delegate at launch, once by SwiftUI
+        // — is queued once, or the second copy would keep the welcome screen away for good.
+        let twice = WorkspaceRegistry()
+        let url = directory.appendingPathComponent("uno.pdf")
+        twice.enqueueDocument(url)
+        twice.enqueueDocument(URL(fileURLWithPath: url.path))
+        check(twice.dequeueDocument() != nil, "The file was not queued")
+        check(!twice.hasPendingDocuments, "The same file was queued twice")
+
+        // Documents reopening from last time keep it away too, until the last one is taken.
+        let file = directory.appendingPathComponent("vecchio.pdf")
+        try! Data("%PDF-1.4".utf8).write(to: file)
+        preferences.restoreLastDocument = true
+        preferences.temporaryAutosave = false
+        preferences.sessionDocuments = [
+            AppPreferences.SessionDocument(path: file.path, pageIndex: 0, zoom: 1, layout: "continuous")
+        ]
+        let restoring = WorkspaceRegistry()
+        restoring.prepareRestoreQueue(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: directory.appendingPathComponent("R"))
+        )
+        restoring.windowDidSettle()
+        check(!restoring.shouldOfferWelcome, "The welcome screen was offered over a document reopening")
+        check(restoring.nextRestoreItem() != nil, "Nothing was queued to reopen")
+        check(restoring.shouldOfferWelcome, "The welcome screen stayed away once everything had reopened")
     }
 
     // MARK: - Following a link

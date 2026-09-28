@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 struct ContentView: View {
     @EnvironmentObject private var workspace: PDFWorkspace
+    @EnvironmentObject private var registry: WorkspaceRegistry
     @State private var dropTargeted = false
 
     /// Accepts PDFs and images dropped on the window: a PDF opens like any other
@@ -60,6 +61,10 @@ struct ContentView: View {
         .sheet(isPresented: $workspace.showOCRResult) {
             OCRResultSheet(text: $workspace.ocrText)
         }
+        .sheet(isPresented: $workspace.showAutoFill) {
+            AutoFillSheet()
+                .environmentObject(workspace)
+        }
         .sheet(isPresented: $workspace.showNoteEditor) {
             NoteEditorSheet()
                 .environmentObject(workspace)
@@ -101,8 +106,12 @@ struct ContentView: View {
                     .frame(minWidth: 480)
                 if workspace.inspectorVisible { InspectorPanel() }
             }
-        } else {
+        } else if registry.shouldOfferWelcome {
             WelcomeView()
+        } else {
+            // Something is on its way into this window — a file being opened, or a document
+            // reopening from last time. The welcome screen would only be in the way of it.
+            Color(nsColor: .windowBackgroundColor)
         }
     }
 

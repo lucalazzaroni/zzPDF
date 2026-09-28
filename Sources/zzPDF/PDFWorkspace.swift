@@ -186,6 +186,8 @@ final class PDFWorkspace: ObservableObject {
     @Published var stampAppliesToSelectionOnly = false
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
+    @Published var showAutoFill = false
+    var autoFillCandidates: [FormFieldMatcher.Match] = []
     @Published var showFreeTextEditor = false
     @Published var ocrText = ""
     @Published var annotationDraftText = ""
@@ -1773,6 +1775,92 @@ final class PDFWorkspace: ObservableObject {
         registerEdit(wasDirtyBefore: wasDirty, undo: { apply(false) }, redo: { apply(true) })
         changed("Form filled in")
         return changes.count
+    }
+
+    /// Every field in this document that one of the reader's own details belongs in.
+    ///
+    /// Only text fields: a tick box or a dropdown asks something a stored detail cannot
+    /// answer, and guessing at those would fill a form with things the reader never said.
+    func autoFillMatches() -> [FormFieldMatcher.Match] {
+        guard let document = pdfDocument else { return [] }
+        let profile = preferences.personalProfile
+        guard !profile.isEmpty else { return [] }
+
+        var matches: [FormFieldMatcher.Match] = []
+        var filled: Set<String> = []
+        for index in 0..<document.pageCount {
+            guard let page = document.page(at: index) else { continue }
+            for annotation in page.annotations
+            where annotation.isSubtype(.widget) && annotation.widgetFieldType == .text {
+                guard !annotation.isReadOnly else { continue }
+                let candidates = FormFieldMatcher.candidates(for: annotation, on: page)
+                guard let detail = FormFieldMatcher.detail(for: candidates, in: profile) else { continue }
+                let current = annotation.widgetStringValue ?? ""
+                guard current.trimmingCharacters(in: .whitespacesAndNewlines) != detail.value else { continue }
+
+                // Fields sharing a name are one field shown twice; filling it once is enough.
+                let identity = annotation.fieldName ?? candidates.first ?? UUID().uuidString
+                guard filled.insert(identity).inserted else { continue }
+                matches.append(FormFieldMatcher.Match(
+                    annotation: annotation,
+                    pageIndex: index,
+                    fieldLabel: fieldLabel(from: candidates),
+                    detailLabel: detail.label,
+                    currentValue: current,
+                    newValue: detail.value
+                ))
+            }
+        }
+        return matches
+    }
+
+    /// The most readable of the things a field is known by.
+    private func fieldLabel(from candidates: [String]) -> String {
+        let readable = candidates.first { candidate in
+            let trimmed = candidate.trimmingCharacters(in: .whitespacesAndNewlines)
+            // A name like f1_07[0] tells the reader nothing; one with letters and a space
+            // or a colon in it is the question the form is actually asking.
+            return trimmed.count > 2 && trimmed.contains(where: \.isLetter) && !trimmed.contains("[")
+        }
+        return (readable ?? candidates.first ?? "Field")
+            .trimmingCharacters(in: CharacterSet(charactersIn: " \t\n:*"))
+    }
+
+    /// Writes the chosen details into the form, as one undo step.
+    @discardableResult
+    func applyAutoFill(_ matches: [FormFieldMatcher.Match]) -> Int {
+        guard !matches.isEmpty else { return 0 }
+        let changes = matches.map { ($0.annotation, $0.currentValue, $0.newValue) }
+        let wasDirty = isDirty
+        let apply: (Bool) -> Void = { forward in
+            for (annotation, old, new) in changes {
+                annotation.widgetStringValue = forward ? new : old
+            }
+        }
+        apply(true)
+        registerEdit(wasDirtyBefore: wasDirty, undo: { apply(false) }, redo: { apply(true) })
+        changed("\(matches.count) field\(matches.count == 1 ? "" : "s") filled from your details")
+        pdfView?.needsDisplay = true
+        return matches.count
+    }
+
+    /// Opens the review sheet, or says why there is nothing to review.
+    func beginAutoFill() {
+        finishActiveTextEditing()
+        guard hasFormFields else {
+            statusMessage = "This document has no form fields"
+            return
+        }
+        guard !preferences.personalProfile.isEmpty else {
+            presentError("Add your details in Settings → My Details first, and zzPDF will fill forms in from them.")
+            return
+        }
+        autoFillCandidates = autoFillMatches()
+        guard !autoFillCandidates.isEmpty else {
+            statusMessage = "Nothing in this form matched your details"
+            return
+        }
+        showAutoFill = true
     }
 
     func updateButtonField(_ annotation: PDFAnnotation, to state: PDFWidgetCellState) {

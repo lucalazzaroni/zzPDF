@@ -1,8 +1,22 @@
 import AppKit
 import SwiftUI
 
+/// Takes the files the app is launched with.
+///
+/// AppKit hands these over while the app is still starting, before the first window is on
+/// screen, which is what makes it possible to open a document without the welcome screen
+/// appearing first. SwiftUI's own `onOpenURL` arrives later, and often after.
+final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.pathExtension.lowercased() == "pdf" {
+            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+        }
+    }
+}
+
 @main
 struct ZZPDFApp: App {
+    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var preferences = AppPreferences()
     @StateObject private var registry = WorkspaceRegistry()
 
@@ -37,6 +51,7 @@ private struct DocumentWindow: View {
         ContentView()
             .environmentObject(workspace)
             .environmentObject(preferences)
+            .environmentObject(registry)
             .focusedSceneObject(workspace)
             .frame(minWidth: 980, minHeight: 680)
             .background(DocumentWindowAccessor(workspace: workspace, registry: registry))
@@ -45,6 +60,7 @@ private struct DocumentWindow: View {
                 registry.requestNewWindow = { openWindow(id: "document") }
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
+                    registry.windowDidSettle()
                     return
                 }
                 registry.prepareRestoreQueue(preferences: preferences)
@@ -52,6 +68,7 @@ private struct DocumentWindow: View {
                     workspace.restore(item)
                 }
                 registry.openWindowsForRemainingRestores { openWindow(id: $0) }
+                registry.windowDidSettle()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 registry.prepareForTermination()
@@ -140,6 +157,19 @@ struct AppCommands: Commands {
         CommandGroup(replacing: .printItem) {
             Button("Print…") { document?.printDocument() }
                 .keyboardShortcut("p", modifiers: [.command])
+                .disabled(document?.hasDocument != true)
+        }
+        CommandMenu("Forms") {
+            Button("Fill from My Details…") { document?.beginAutoFill() }
+                .keyboardShortcut("f", modifiers: [.command, .option])
+                .disabled(document?.hasDocument != true)
+            Button("My Details…") {
+                NSApp.sendAction(Selector(("showSettingsWindow:")), to: nil, from: nil)
+            }
+            Divider()
+            Button("Import Form Data…") { document?.importFormData() }
+                .disabled(document?.hasDocument != true)
+            Button("Export Form Data…") { document?.exportFormData() }
                 .disabled(document?.hasDocument != true)
         }
         CommandMenu("Pages") {

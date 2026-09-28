@@ -16,8 +16,16 @@ final class WorkspaceRegistry: ObservableObject {
     private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
     private var didAssignInitialRestoration = false
     private weak var pendingTabHost: NSWindow?
-    private var pendingDocumentURLs: [URL] = []
-    private var restoreQueue: [RestoreItem] = []
+    @Published private var pendingDocumentURLs: [URL] = []
+    @Published private var restoreQueue: [RestoreItem] = []
+    /// True until the first window has worked out what it is showing.
+    ///
+    /// A window's body is rendered before its `onAppear` runs, so a window that is about to
+    /// be handed a document would otherwise put the welcome screen on screen first and
+    /// replace it a moment later. While the app is settling an empty window shows nothing
+    /// at all, which is what the reader expects when they opened a file.
+    @Published private(set) var isSettling = true
+    private var didSettle = false
     private var didOpenRestoreWindows = false
     private(set) var isTerminating = false
     /// Asks SwiftUI for another window in the document group. Set by each window as it
@@ -167,7 +175,27 @@ final class WorkspaceRegistry: ObservableObject {
     /// Queues a file for the next window to open, so a document arriving from the Finder
     /// or a drop lands in its own window instead of replacing what is already on screen.
     func enqueueDocument(_ url: URL) {
+        // The same file can be handed to the app twice — the delegate is told about a
+        // Finder "Open With" and SwiftUI reports it again — and queueing it twice would
+        // leave an entry nothing ever claims.
+        let target = url.standardizedFileURL
+        guard !pendingDocumentURLs.contains(where: { $0.standardizedFileURL == target }) else { return }
         pendingDocumentURLs.append(url)
+    }
+
+    /// Called by the first window once it knows what it is showing.
+    func windowDidSettle() {
+        guard !didSettle else { return }
+        didSettle = true
+        isSettling = false
+    }
+
+    /// Whether a window with nothing open in it should offer the welcome screen.
+    ///
+    /// It should not while anything is still on its way: the app is starting up, a file is
+    /// queued for a window, or there are documents left to reopen from last time.
+    var shouldOfferWelcome: Bool {
+        !isSettling && pendingDocumentURLs.isEmpty && restoreQueue.isEmpty
     }
 
     func dequeueDocument() -> URL? {
