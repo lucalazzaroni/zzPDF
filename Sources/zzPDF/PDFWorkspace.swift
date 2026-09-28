@@ -139,7 +139,10 @@ private struct PDFEditAction {
 @MainActor
 final class PDFWorkspace: ObservableObject {
     @Published var pdfDocument: PDFDocument? {
-        didSet { observeSearch(in: pdfDocument) }
+        didSet {
+            observeSearch(in: pdfDocument)
+            NotificationCenter.default.post(name: .zzPDFDocumentStateChanged, object: nil)
+        }
     }
     @Published var fileURL: URL?
     @Published var currentPageIndex = 0
@@ -187,6 +190,14 @@ final class PDFWorkspace: ObservableObject {
     @Published var showOCRResult = false
     @Published var showNoteEditor = false
     @Published var showAutoFill = false
+    /// True while this window has only just appeared.
+    ///
+    /// A window's body is drawn before it is told what to put in it, and the file a reader
+    /// double-clicked arrives a moment after the window does — about a third of a second,
+    /// measured. A window that offered the welcome screen the instant it appeared put it up
+    /// in front of the document on its way in. It waits a beat instead. Per window, not per
+    /// app: a new empty window must not blank the ones already on screen.
+    @Published private(set) var isSettling = true
     /// The last thing that went wrong, kept so a test can say what it was.
     private(set) var lastErrorMessage: String?
     var autoFillCandidates: [FormFieldMatcher.Match] = []
@@ -357,6 +368,14 @@ final class PDFWorkspace: ObservableObject {
         alert.addButton(withTitle: "Open")
         alert.addButton(withTitle: "Cancel")
         return alert.runModal() == .alertFirstButtonReturn
+    }
+
+    /// Starts the beat a new window waits before it offers the welcome screen.
+    func settleAfterAppearing() {
+        guard isSettling else { return }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.8) { [weak self] in
+            self?.isSettling = false
+        }
     }
 
     func openDocument() {

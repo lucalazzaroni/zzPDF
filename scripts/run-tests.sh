@@ -29,6 +29,17 @@ else
     done
 fi
 
+# The app's own entry point is left out of every suite, since it carries @main. Nothing
+# else type-checks it, so a change that breaks it used to surface only as an app that
+# quietly went on running the previous build.
+echo "Checking the application sources"
+if ! SDKROOT="$SDK_PATH" "$SWIFTC" -typecheck -sdk "$SDK_PATH" -parse-as-library \
+    "$PROJECT_DIR"/Sources/zzPDF/*.swift 2>"$BUILD_DIR/typecheck.log"; then
+    grep -E "error:" "$BUILD_DIR/typecheck.log" | head -20 >&2
+    echo "The application sources do not compile." >&2
+    exit 1
+fi
+
 FAILED=()
 for suite in "${SUITES[@]}"; do
     main="$PROJECT_DIR/Tests/$suite/main.swift"

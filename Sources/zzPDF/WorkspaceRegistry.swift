@@ -5,6 +5,8 @@ import SwiftUI
 /// or the recent-documents menu.
 extension Notification.Name {
     static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
+    /// Posted when a window gains or loses its document.
+    static let zzPDFDocumentStateChanged = Notification.Name("zzPDFDocumentStateChanged")
 }
 
 
@@ -18,20 +20,15 @@ final class WorkspaceRegistry: ObservableObject {
     private weak var pendingTabHost: NSWindow?
     @Published private var pendingDocumentURLs: [URL] = []
     @Published private var restoreQueue: [RestoreItem] = []
-    /// True until the first window has worked out what it is showing.
-    ///
-    /// A window's body is rendered before its `onAppear` runs, so a window that is about to
-    /// be handed a document would otherwise put the welcome screen on screen first and
-    /// replace it a moment later. While the app is settling an empty window shows nothing
-    /// at all, which is what the reader expects when they opened a file.
-    @Published private(set) var isSettling = true
-    private var didSettle = false
     private var didOpenRestoreWindows = false
     private(set) var isTerminating = false
     /// Asks SwiftUI for another window in the document group. Set by each window as it
     /// appears, since only a view can reach the `openWindow` action.
     var requestNewWindow: (() -> Void)?
     private var openObserver: (any NSObjectProtocol)?
+    private var documentObserver: (any NSObjectProtocol)?
+    /// How many windows have something open in them.
+    @Published private(set) var openDocumentCount = 0
 
     init() {
         openObserver = NotificationCenter.default.addObserver(
@@ -42,10 +39,21 @@ final class WorkspaceRegistry: ObservableObject {
             guard let url = notification.object as? URL else { return }
             MainActor.assumeIsolated { self?.openDocument(at: url) }
         }
+        documentObserver = NotificationCenter.default.addObserver(
+            forName: .zzPDFDocumentStateChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in
+            MainActor.assumeIsolated {
+                guard let self else { return }
+                self.openDocumentCount = self.workspaces.allObjects.filter(\.hasDocument).count
+            }
+        }
     }
 
     deinit {
         if let openObserver { NotificationCenter.default.removeObserver(openObserver) }
+        if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
     }
 
     /// What a window opened at launch should put on screen.
@@ -133,20 +141,22 @@ final class WorkspaceRegistry: ObservableObject {
     /// posts is a broadcast. Letting each window act on it opened one new window for every
     /// window already on screen.
     func openDocument(at url: URL) {
-        let windows = orderedDocumentWindows()
-        let candidates = windows.map { Candidate(url: $0.workspace.fileURL, isEmpty: !$0.workspace.hasDocument) }
-        switch Self.outcome(for: url, among: candidates) {
+        let candidates = orderedWorkspaces()
+        switch Self.outcome(for: url, among: candidates.map {
+            Candidate(url: $0.fileURL, isEmpty: !$0.hasDocument)
+        }) {
         case .front(let index):
             // The file may already be open — at launch especially, where the window
             // restoring last session's document and the file being opened are usually the
             // same file. That is what put two windows of one document on screen, one
             // restored at its old size and one new.
-            let window = windows[index].window
-            window.tabGroup?.selectedWindow = window
-            window.makeKeyAndOrderFront(nil)
+            if let window = window(for: candidates[index]) {
+                window.tabGroup?.selectedWindow = window
+                window.makeKeyAndOrderFront(nil)
+            }
         case .loadInto(let index):
-            windows[index].workspace.load(url)
-            windows[index].window.makeKeyAndOrderFront(nil)
+            candidates[index].load(url)
+            window(for: candidates[index])?.makeKeyAndOrderFront(nil)
         case .newWindow:
             enqueueDocument(url)
             requestNewWindow?()
@@ -156,20 +166,31 @@ final class WorkspaceRegistry: ObservableObject {
     /// The window already showing `url`, if any.
     func window(showing url: URL) -> NSWindow? {
         let target = url.standardizedFileURL
-        return orderedDocumentWindows()
-            .first { $0.workspace.fileURL?.standardizedFileURL == target }?
-            .window
+        guard let workspace = workspaces.allObjects.first(where: {
+            $0.fileURL?.standardizedFileURL == target
+        }) else { return nil }
+        return window(for: workspace)
     }
 
-    /// Every window with a document in it, the key one first, since that is the one the
-    /// reader is looking at.
-    private func orderedDocumentWindows() -> [(window: NSWindow, workspace: PDFWorkspace)] {
-        let key = NSApp.keyWindow
-        let ordered = [key].compactMap { $0 } + NSApp.orderedWindows.filter { $0 !== key }
-        return ordered.compactMap { window in
-            guard let workspace = workspacesByWindow.object(forKey: window) else { return nil }
-            return (window, workspace)
+    /// Every workspace on screen, the key window's first, since that is the one the reader
+    /// is looking at.
+    ///
+    /// Taken from the workspaces rather than from the windows: a window registers itself
+    /// from `updateNSView`, which SwiftUI runs a turn later, so at launch — exactly when a
+    /// file is being opened — the window map is still empty. Going by it meant an open
+    /// request found no windows at all and opened one of its own next to the empty one
+    /// already sitting there.
+    private func orderedWorkspaces() -> [PDFWorkspace] {
+        let known = workspaces.allObjects
+        guard let key = NSApp.keyWindow, let first = workspacesByWindow.object(forKey: key) else {
+            return known
         }
+        return [first] + known.filter { $0 !== first }
+    }
+
+    /// The window showing `workspace`, once SwiftUI has got round to telling us about it.
+    private func window(for workspace: PDFWorkspace) -> NSWindow? {
+        NSApp.orderedWindows.first { workspacesByWindow.object(forKey: $0) === workspace }
     }
 
     /// Queues a file for the next window to open, so a document arriving from the Finder
@@ -183,23 +204,20 @@ final class WorkspaceRegistry: ObservableObject {
         pendingDocumentURLs.append(url)
     }
 
-    /// Called by the first window once it knows what it is showing.
-    func windowDidSettle() {
-        guard !didSettle else { return }
-        didSettle = true
-        isSettling = false
+    func dequeueDocument() -> URL? {
+        pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
     }
 
     /// Whether a window with nothing open in it should offer the welcome screen.
     ///
-    /// It should not while anything is still on its way: the app is starting up, a file is
-    /// queued for a window, or there are documents left to reopen from last time.
+    /// Only when the app has nothing at all: no document in any window, nothing on its way
+    /// into one, nothing left to reopen from last time, and the launch over and done with.
+    /// A window that happens to be empty beside one holding a document is not an invitation
+    /// to start something — the reader is already reading.
     var shouldOfferWelcome: Bool {
-        !isSettling && pendingDocumentURLs.isEmpty && restoreQueue.isEmpty
-    }
-
-    func dequeueDocument() -> URL? {
-        pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
+        openDocumentCount == 0
+            && pendingDocumentURLs.isEmpty
+            && restoreQueue.isEmpty
     }
 
     var hasPendingDocuments: Bool { !pendingDocumentURLs.isEmpty }

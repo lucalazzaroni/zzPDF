@@ -1,22 +1,8 @@
 import AppKit
 import SwiftUI
 
-/// Takes the files the app is launched with.
-///
-/// AppKit hands these over while the app is still starting, before the first window is on
-/// screen, which is what makes it possible to open a document without the welcome screen
-/// appearing first. SwiftUI's own `onOpenURL` arrives later, and often after.
-final class AppDelegate: NSObject, NSApplicationDelegate {
-    func application(_ application: NSApplication, open urls: [URL]) {
-        for url in urls where url.pathExtension.lowercased() == "pdf" {
-            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
-        }
-    }
-}
-
 @main
 struct ZZPDFApp: App {
-    @NSApplicationDelegateAdaptor(AppDelegate.self) private var appDelegate
     @StateObject private var preferences = AppPreferences()
     @StateObject private var registry = WorkspaceRegistry()
 
@@ -58,9 +44,9 @@ private struct DocumentWindow: View {
             .onAppear {
                 registry.register(workspace)
                 registry.requestNewWindow = { openWindow(id: "document") }
+                workspace.settleAfterAppearing()
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
-                    registry.windowDidSettle()
                     return
                 }
                 registry.prepareRestoreQueue(preferences: preferences)
@@ -68,7 +54,6 @@ private struct DocumentWindow: View {
                     workspace.restore(item)
                 }
                 registry.openWindowsForRemainingRestores { openWindow(id: $0) }
-                registry.windowDidSettle()
             }
             .onReceive(NotificationCenter.default.publisher(for: NSApplication.willTerminateNotification)) { _ in
                 registry.prepareForTermination()

@@ -106,7 +106,7 @@ struct ContentView: View {
                     .frame(minWidth: 480)
                 if workspace.inspectorVisible { InspectorPanel() }
             }
-        } else if registry.shouldOfferWelcome {
+        } else if !workspace.isSettling, registry.shouldOfferWelcome {
             WelcomeView()
         } else {
             // Something is on its way into this window — a file being opened, or a document
