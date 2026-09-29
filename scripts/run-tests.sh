@@ -71,6 +71,12 @@ for suite in "${SUITES[@]}"; do
     FAILED+=("$suite")
 done
 
+# Each suite gives itself a UserDefaults domain of its own and removes it when it is
+# done, but the preferences daemon writes the file back out empty, so a run leaves one
+# behind per suite — hundreds of them over time. They are ours and nobody else's, named
+# after this app's test prefix, so the run tidies them up.
+/usr/bin/find "$HOME/Library/Preferences" -maxdepth 1 -name 'it.lucalazzaroni.zzpdf.tests.*.plist' -delete 2>/dev/null || true
+
 if (( ${#FAILED} > 0 )); then
     echo
     echo "${#FAILED} of ${#SUITES} suites failed: ${FAILED[*]}" >&2
