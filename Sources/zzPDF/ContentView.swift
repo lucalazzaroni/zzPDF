@@ -193,15 +193,15 @@ struct WelcomeView: View {
                 endPoint: .bottomTrailing
             )
             VStack(spacing: 22) {
-                ZStack {
-                    RoundedRectangle(cornerRadius: 25)
-                        .fill(Color.accentColor.gradient)
-                        .frame(width: 92, height: 92)
-                        .shadow(color: Color.accentColor.opacity(0.25), radius: 18, y: 8)
-                    Image(systemName: "doc.richtext.fill")
-                        .font(.system(size: 43, weight: .medium))
-                        .foregroundStyle(.white)
-                }
+                // The app's own icon, rather than a drawing of one: a second version of it
+                // here is a second version to keep in step, and it had already drifted.
+                Image(nsImage: NSApp?.applicationIconImage
+                    ?? NSImage(named: NSImage.applicationIconName)
+                    ?? NSImage())
+                    .resizable()
+                    .interpolation(.high)
+                    .frame(width: 96, height: 96)
+                    .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
                 VStack(spacing: 8) {
                     Text("zzPDF")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
