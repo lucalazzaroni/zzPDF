@@ -196,6 +196,27 @@ struct OpenAndLinkSmoke {
             windowsAsked == 1,
             "The recovered work was left with nowhere to go: \(windowsAsked) windows asked for"
         )
+        // And it arrives as another tab of the window already open, rather than as a second
+        // window somewhere else on the screen.
+        check(
+            launching.standaloneWindowsPending == 0,
+            "The recovered work was going to open in a window of its own"
+        )
+
+        // So does a document opened when every window is already busy.
+        let full = WorkspaceRegistry()
+        full.register(holder)
+        var opened = 0
+        full.requestNewWindow = { opened += 1 }
+        full.openDocument(at: directory.appendingPathComponent("altro.pdf"))
+        check(opened == 1, "Opening a second document asked for \(opened) windows")
+        check(
+            full.standaloneWindowsPending == 0,
+            "A second document was going to open in a window of its own"
+        )
+        // New Window still means a window.
+        full.willOpenStandaloneWindow()
+        check(full.standaloneWindowsPending == 1, "New Window did not ask for a window")
     }
 
     // MARK: - Following a link

@@ -19,7 +19,13 @@ final class WorkspaceRegistry: ObservableObject {
     private let delegateProxies = NSMapTable<NSWindow, DocumentWindowDelegateProxy>.weakToStrongObjects()
     private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
     private var didAssignInitialRestoration = false
-    private weak var pendingTabHost: NSWindow?
+    /// How many windows still on their way were asked for as windows in their own right.
+    ///
+    /// Tabbing is what happens otherwise. A document the reader asked for belongs beside
+    /// what they are already reading, and most windows are not asked for by the app at all
+    /// — SwiftUI makes one of its own for a file opened while the app is running — so
+    /// marking the ones we ask for was marking the wrong half.
+    private(set) var standaloneWindowsPending = 0
     @Published private var pendingDocumentURLs: [URL] = []
     @Published private var restoreQueue: [RestoreItem] = []
     private var didOpenRestoreWindows = false
@@ -83,8 +89,17 @@ final class WorkspaceRegistry: ObservableObject {
         workspaces.add(workspace)
     }
 
-    func requestNewTab(in host: NSWindow?) {
-        pendingTabHost = host
+    /// Says that the next window to appear is a window, not another tab.
+    ///
+    /// Said before the window is asked for, because a window is configured well after the
+    /// asking and there is nothing to attach it to in between.
+    func willOpenStandaloneWindow() {
+        standaloneWindowsPending += 1
+    }
+
+    /// Asks for somewhere to put a document: another tab of what is already open.
+    func requestWindow() {
+        requestNewWindow?()
     }
 
     func configure(window: NSWindow, workspace: PDFWorkspace) {
@@ -109,15 +124,23 @@ final class WorkspaceRegistry: ObservableObject {
             window.delegate = proxy
         }
 
-        if isNewWindow,
-           let host = pendingTabHost,
-           host !== window {
-            pendingTabHost = nil
+        if isNewWindow, let host = host(besides: window) {
+            guard standaloneWindowsPending == 0 else {
+                standaloneWindowsPending -= 1
+                return
+            }
             host.tabbingMode = .preferred
             host.tabbingIdentifier = window.tabbingIdentifier
             host.addTabbedWindow(window, ordered: .above)
             window.makeKeyAndOrderFront(nil)
         }
+    }
+
+    /// The window a new tab should join: the one the reader is looking at, or failing that
+    /// any other document window.
+    private func host(besides window: NSWindow) -> NSWindow? {
+        if let key = NSApp?.keyWindow, key !== window, configuredWindows.contains(key) { return key }
+        return (NSApp?.orderedWindows ?? []).first { $0 !== window && configuredWindows.contains($0) }
     }
 
     /// One window, as far as deciding where to open a document is concerned.
@@ -177,7 +200,7 @@ final class WorkspaceRegistry: ObservableObject {
             window(for: candidates[index])?.makeKeyAndOrderFront(nil)
         case .newWindow:
             enqueueDocument(url)
-            requestNewWindow?()
+            requestWindow()
         }
     }
 
@@ -269,7 +292,7 @@ final class WorkspaceRegistry: ObservableObject {
             guard let item = nextRestoreItem() else { return }
             workspace.restore(item)
         }
-        openWindowsForRemainingRestores { requestNewWindow?() }
+        openWindowsForRemainingRestores { requestWindow() }
     }
 
     /// Whether a window with nothing open in it should offer the welcome screen.

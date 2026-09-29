@@ -80,7 +80,10 @@ struct AppCommands: Commands {
 
     var body: some Commands {
         CommandGroup(replacing: .newItem) {
-            Button("New Window") { openWindow(id: "document") }
+            Button("New Window") {
+                registry.willOpenStandaloneWindow()
+                openWindow(id: "document")
+            }
                 .keyboardShortcut("n", modifiers: [.command])
             Button("New Tab") { createTab() }
                 .keyboardShortcut("t", modifiers: [.command])
@@ -244,7 +247,6 @@ struct AppCommands: Commands {
     }
 
     private func createTab() {
-        registry.requestNewTab(in: NSApp.keyWindow)
         openWindow(id: "document")
     }
 }
