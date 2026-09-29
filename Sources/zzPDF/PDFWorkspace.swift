@@ -141,7 +141,6 @@ final class PDFWorkspace: ObservableObject {
     @Published var pdfDocument: PDFDocument? {
         didSet {
             observeSearch(in: pdfDocument)
-            NotificationCenter.default.post(name: .zzPDFDocumentStateChanged, object: nil)
         }
     }
     @Published var fileURL: URL?

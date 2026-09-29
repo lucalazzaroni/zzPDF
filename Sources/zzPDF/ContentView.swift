@@ -93,7 +93,7 @@ struct ContentView: View {
             NSApp.keyWindow?.tabbingMode = .preferred
         }
         .onDisappear { workspace.flushTemporaryAutosave() }
-        .navigationTitle(workspace.hasDocument ? workspace.displayName : "zzPDF")
+        .navigationTitle(WorkspaceRegistry.windowTitle(workspace.hasDocument ? workspace.displayName : "zzPDF"))
     }
 
     @ViewBuilder

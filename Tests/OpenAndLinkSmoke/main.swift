@@ -120,8 +120,9 @@ struct OpenAndLinkSmoke {
         check(restoring.nextRestoreItem() != nil, "Nothing was queued to reopen")
         check(restoring.shouldOfferWelcome, "The welcome screen stayed away once everything had reopened")
 
-        // A window with nothing in it beside one holding a document is not an invitation to
-        // start something: the reader is already reading.
+        // A window opened beside one that already holds a document still offers it. A tab
+        // the reader opened for the purpose is empty because they asked for somewhere to
+        // start, and showing them nothing at all is no use to anyone.
         let reading = WorkspaceRegistry()
         reading.finishLaunching()
         let busy = PDFWorkspace(preferences: preferences, recoveryStore: store)
@@ -131,7 +132,7 @@ struct OpenAndLinkSmoke {
         check(reading.shouldOfferWelcome, "Two empty windows were not offered the welcome screen")
         busy.load(makePDF(in: directory))
         check(busy.hasDocument, "The fixture did not open")
-        check(!reading.shouldOfferWelcome, "The welcome screen was offered beside an open document")
+        check(reading.shouldOfferWelcome, "A new tab beside an open document was left blank")
 
         // A window only just opened waits a moment before offering it, since a file opened
         // while the app is already running reaches its window just after the window exists.

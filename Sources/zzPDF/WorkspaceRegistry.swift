@@ -5,8 +5,6 @@ import SwiftUI
 /// or the recent-documents menu.
 extension Notification.Name {
     static let zzPDFOpenDocument = Notification.Name("zzPDFOpenDocument")
-    /// Posted when a window gains or loses its document.
-    static let zzPDFDocumentStateChanged = Notification.Name("zzPDFDocumentStateChanged")
     /// Posted once AppKit has finished launching the app.
     static let zzPDFDidFinishLaunching = Notification.Name("zzPDFDidFinishLaunching")
 }
@@ -40,10 +38,7 @@ final class WorkspaceRegistry: ObservableObject {
     /// appears, since only a view can reach the `openWindow` action.
     var requestNewWindow: (() -> Void)?
     private var openObserver: (any NSObjectProtocol)?
-    private var documentObserver: (any NSObjectProtocol)?
     private var launchObserver: (any NSObjectProtocol)?
-    /// How many windows have something open in them.
-    @Published private(set) var openDocumentCount = 0
 
     init() {
         openObserver = NotificationCenter.default.addObserver(
@@ -61,21 +56,10 @@ final class WorkspaceRegistry: ObservableObject {
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.applicationDidFinishLaunching() }
         }
-        documentObserver = NotificationCenter.default.addObserver(
-            forName: .zzPDFDocumentStateChanged,
-            object: nil,
-            queue: .main
-        ) { [weak self] _ in
-            MainActor.assumeIsolated {
-                guard let self else { return }
-                self.openDocumentCount = self.workspaces.allObjects.filter(\.hasDocument).count
-            }
-        }
     }
 
     deinit {
         if let openObserver { NotificationCenter.default.removeObserver(openObserver) }
-        if let documentObserver { NotificationCenter.default.removeObserver(documentObserver) }
         if let launchObserver { NotificationCenter.default.removeObserver(launchObserver) }
     }
 
@@ -111,7 +95,7 @@ final class WorkspaceRegistry: ObservableObject {
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "it.lucalazzaroni.zzpdf.documents"
         let name = workspace.hasDocument ? workspace.displayName : "zzPDF"
-        window.title = name
+        window.title = Self.windowTitle(name)
         // The tab bar is AppKit's and takes no margins from us. A name too long for its
         // tab is set flush against the divider beside it, so the tab is given a shorter
         // name of its own with room to breathe.
@@ -140,6 +124,13 @@ final class WorkspaceRegistry: ObservableObject {
             window.makeKeyAndOrderFront(nil)
         }
     }
+
+    /// A document's name as the toolbar should carry it.
+    ///
+    /// AppKit sets the title hard against the divider that separates the sidebar's half of
+    /// the toolbar from the document's, with a couple of points between them and no way to
+    /// ask for more. Leading space in the title itself is the way to ask.
+    static func windowTitle(_ name: String) -> String { "   " + name }
 
     /// A name short enough to sit inside a tab rather than fill it, keeping the beginning
     /// and the end, which is where documents differ from one another.
@@ -311,15 +302,13 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Whether a window with nothing open in it should offer the welcome screen.
     ///
-    /// Only when the app has nothing at all: no document in any window, nothing on its way
-    /// into one, nothing left to reopen from last time, and the launch over and done with.
-    /// A window that happens to be empty beside one holding a document is not an invitation
-    /// to start something — the reader is already reading.
+    /// Empty and waiting is not the same as empty and done. While the app is starting, or
+    /// while a file is on its way into a window, or while documents are still reopening,
+    /// a window shows nothing rather than an invitation that is about to be replaced.
+    /// Once none of that is true, an empty window has nothing better to offer — including
+    /// a tab the reader has just opened for the purpose.
     var shouldOfferWelcome: Bool {
-        !isLaunching
-            && openDocumentCount == 0
-            && pendingDocumentURLs.isEmpty
-            && restoreQueue.isEmpty
+        !isLaunching && pendingDocumentURLs.isEmpty && restoreQueue.isEmpty
     }
 
     var hasPendingDocuments: Bool { !pendingDocumentURLs.isEmpty }
