@@ -110,7 +110,12 @@ final class WorkspaceRegistry: ObservableObject {
 
         window.tabbingMode = .preferred
         window.tabbingIdentifier = "it.lucalazzaroni.zzpdf.documents"
-        window.title = workspace.hasDocument ? workspace.displayName : "zzPDF"
+        let name = workspace.hasDocument ? workspace.displayName : "zzPDF"
+        window.title = name
+        // The tab bar is AppKit's and takes no margins from us. A name too long for its
+        // tab is set flush against the divider beside it, so the tab is given a shorter
+        // name of its own with room to breathe.
+        window.tab.title = " " + Self.shortened(name) + " "
         window.representedURL = workspace.fileURL
         window.isDocumentEdited = workspace.isDirty
 
@@ -134,6 +139,15 @@ final class WorkspaceRegistry: ObservableObject {
             host.addTabbedWindow(window, ordered: .above)
             window.makeKeyAndOrderFront(nil)
         }
+    }
+
+    /// A name short enough to sit inside a tab rather than fill it, keeping the beginning
+    /// and the end, which is where documents differ from one another.
+    static func shortened(_ name: String, limit: Int = 22) -> String {
+        guard name.count > limit else { return name }
+        let head = name.prefix((limit - 1) / 2)
+        let tail = name.suffix(limit - 1 - head.count)
+        return "\(head)…\(tail)"
     }
 
     /// The window a new tab should join: the one the reader is looking at, or failing that

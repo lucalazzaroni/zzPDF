@@ -12,6 +12,7 @@ struct OpenAndLinkSmoke {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         openRequests(in: directory)
+        tabTitles()
         welcome(in: directory)
         links(in: directory)
         print("Open request and link smoke test passed.")
@@ -217,6 +218,33 @@ struct OpenAndLinkSmoke {
         // New Window still means a window.
         full.willOpenStandaloneWindow()
         check(full.standaloneWindowsPending == 1, "New Window did not ask for a window")
+    }
+
+    // MARK: - What a tab is called
+
+    private static func tabTitles() {
+        // A name that fits is left alone.
+        check(
+            WorkspaceRegistry.shortened("Relazione") == "Relazione",
+            "A short name was shortened to \(WorkspaceRegistry.shortened("Relazione"))"
+        )
+
+        // One that does not is cut in the middle rather than at the end. The tab bar is
+        // AppKit's and takes no margins from us: a name too long for its tab is set flush
+        // against the divider beside it, and the end of a name is usually where one
+        // document differs from the next.
+        let long = "SART_OB_scelta_journal_definitiva_2026"
+        let short = WorkspaceRegistry.shortened(long, limit: 22)
+        check(short.count == 22, "\(short) is \(short.count) characters instead of 22")
+        check(short.contains("…"), "\(short) was cut without saying so")
+        check(short.hasPrefix("SART_OB"), "\(short) lost the beginning of the name")
+        check(short.hasSuffix("2026"), "\(short) lost the end of the name")
+
+        // The limit is honoured however little there is to work with.
+        for limit in 2...30 {
+            let cut = WorkspaceRegistry.shortened(long, limit: limit)
+            check(cut.count <= limit, "A limit of \(limit) produced \(cut.count) characters")
+        }
     }
 
     // MARK: - Following a link
