@@ -205,6 +205,21 @@ struct OpenAndLinkSmoke {
             "The recovered work was going to open in a window of its own"
         )
 
+        // A file opened while the app is running arrives in a window SwiftUI has just made
+        // for it, and that window is not yet the key one. It belongs there, not in
+        // whichever window the reader happened to be looking at — putting it in the latter
+        // left the new window showing the welcome screen in front of the file they asked
+        // for, which is what they saw.
+        let arriving = WorkspaceRegistry()
+        arriving.finishLaunching()
+        let older = PDFWorkspace(preferences: preferences, recoveryStore: store)
+        let newer = PDFWorkspace(preferences: preferences, recoveryStore: store)
+        arriving.register(older)
+        arriving.register(newer)
+        arriving.openDocument(at: makePDF(in: directory))
+        check(newer.hasDocument, "The file did not open in the window that had just appeared")
+        check(!older.hasDocument, "The file opened in the window the reader was already looking at")
+
         // So does a document opened when every window is already busy.
         let full = WorkspaceRegistry()
         full.register(holder)

@@ -13,6 +13,8 @@ extension Notification.Name {
 @MainActor
 final class WorkspaceRegistry: ObservableObject {
     private let workspaces = NSHashTable<PDFWorkspace>.weakObjects()
+    /// The windows in the order they appeared, so the newest can be found again.
+    private var arrivals: [WeakWorkspace] = []
     private let configuredWindows = NSHashTable<NSWindow>.weakObjects()
     private let delegateProxies = NSMapTable<NSWindow, DocumentWindowDelegateProxy>.weakToStrongObjects()
     private let workspacesByWindow = NSMapTable<NSWindow, PDFWorkspace>.weakToWeakObjects()
@@ -71,6 +73,9 @@ final class WorkspaceRegistry: ObservableObject {
 
     func register(_ workspace: PDFWorkspace) {
         workspaces.add(workspace)
+        arrivals.removeAll { $0.value == nil }
+        guard !arrivals.contains(where: { $0.value === workspace }) else { return }
+        arrivals.append(WeakWorkspace(workspace))
     }
 
     /// Says that the next window to appear is a window, not another tab.
@@ -218,22 +223,19 @@ final class WorkspaceRegistry: ObservableObject {
         return window(for: workspace)
     }
 
-    /// Every workspace on screen, the key window's first, since that is the one the reader
-    /// is looking at.
+    /// Every workspace on screen, the one that appeared most recently first.
+    ///
+    /// Newest first, and deliberately not the key window first. A file opened while the app
+    /// is running arrives in a window SwiftUI has just made for it, and that window is not
+    /// yet the key one — so going by the key window put the document in whichever window
+    /// the reader happened to be looking at and left the new one showing the welcome
+    /// screen, which is the one they were shown.
     ///
     /// Taken from the workspaces rather than from the windows: a window registers itself
     /// from `updateNSView`, which SwiftUI runs a turn later, so at launch — exactly when a
-    /// file is being opened — the window map is still empty. Going by it meant an open
-    /// request found no windows at all and opened one of its own next to the empty one
-    /// already sitting there.
+    /// file is being opened — the window map is still empty.
     private func orderedWorkspaces() -> [PDFWorkspace] {
-        let known = workspaces.allObjects
-        // NSApp is nil outside a running application, as in a test, and reaching through it
-        // would take the whole process down.
-        guard let key = NSApp?.keyWindow, let first = workspacesByWindow.object(forKey: key) else {
-            return known
-        }
-        return [first] + known.filter { $0 !== first }
+        arrivals.compactMap(\.value).reversed()
     }
 
     /// The window showing `workspace`, once SwiftUI has got round to telling us about it.
@@ -432,4 +434,12 @@ struct DocumentWindowAccessor: NSViewRepresentable {
             registry.configure(window: window, workspace: workspace)
         }
     }
+}
+
+
+
+/// Holds a window's workspace without keeping it alive.
+private final class WeakWorkspace {
+    weak var value: PDFWorkspace?
+    init(_ value: PDFWorkspace) { self.value = value }
 }
