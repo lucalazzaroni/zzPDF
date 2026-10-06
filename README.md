@@ -7,12 +7,14 @@ A private, offline, native PDF editor for macOS, built with SwiftUI and PDFKit.
 
 zzPDF lets you read, organize, fill, edit the text of, annotate, redact, and graphically sign PDF documents without uploading them to an external service. Documents exported by zzPDF can still be digitally signed afterward with services such as Aruba.
 
-The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.zip`](dist/zzPDF-macOS-arm64-v0.7.2.zip).
+The current Apple Silicon build is [zzPDF 0.8.0](dist/zzPDF-macOS-arm64-v0.8.0.zip). The local app is `outputs/zzPDF.app`, with its archive at `outputs/zzPDF-macOS.zip`. Rebuild it with `./build-app.sh`.
 
 ## Features
 
 - Continuous, single-page, two-page, and two-page continuous layouts.
+- A refreshed welcome screen introduces text editing, annotation, forms, signatures, page organization, OCR, comparison, and export, using the same icon as the app and Dock.
 - Page fitting, actual size, thumbnails, search with `Command-F`, `Return`/`Shift-Return` result navigation, zoom, and navigation.
+- A dedicated Find button opens the search field in the sidebar, keeping it accessible even at the minimum window width.
 - Native printing from File > Print or `Command-P`, with page fitting and automatic rotation.
 - An Edit Text tool that rewrites the text already on the page: click a line, or drag across a block, and type over it in place. The original font, size, color, and paper color are reused, and the replacement lands on the original baseline.
 - Visible annotation selection with a clear selection outline; corner handles remain usable immediately after drawing and scale freehand ink instead of clipping it.
@@ -38,6 +40,7 @@ The current Apple Silicon build is available at [`dist/zzPDF-macOS-arm64-v0.7.2.
 - Page numbers, headers, footers, Bates numbering, and watermarks drawn into the page itself, with a live preview.
 - Night and sepia reading modes, which tint the view and change nothing in the document.
 - Document splitting every few pages or at each contents entry, and comparison against another version, page by page.
+- Document comparison renders independent snapshots in the background so the interface remains responsive.
 - Form data exported to and imported from JSON, and Tab walking a form in reading order across pages.
 - Detection of digital signatures, reporting the signer, scheme, and date the file claims.
 - Multi-selected thumbnails, drag-to-reorder, and rotation, duplication, extraction, and deletion applied to the whole selection in one undo step.
@@ -91,6 +94,8 @@ Each check under `Tests/` is a standalone program compiled together with the app
 ./scripts/run-tests.sh RedactionSmoke TextEditSmoke
 ```
 
+See [the October 2026 review](docs/QA-2026-10-06.md) for verified fixes, test coverage, and remaining limitations.
+
 ## Local Installation
 
 Open `outputs/zzPDF-macOS.zip`, then drag `zzPDF.app` to the Applications folder.
@@ -140,7 +145,7 @@ While the line is being typed it is an annotation, which is what makes the edit 
 Consequences worth knowing:
 
 - Replacing a line with the same text is invisible: the new run lands on the original baseline, within a fraction of a point.
-- The original run is painted over, not deleted: PDFKit cannot remove text from a content stream, so a replaced line's old words stay in the file underneath and can still be found by a text search. **Export Flattened** does not change that; rasterizing the page, as a redaction does, is the only way to be rid of them.
+- The writer attempts to remove the old text runs from the regenerated content stream before drawing the replacement. Unsupported stream structures fall back to a visual cover, so editing text is not a substitute for secure redaction. Use redaction and **Export Flattened** for sensitive information.
 - Replacements reuse the original typeface when the system has it, and fall back to the closest available font otherwise.
 - A longer replacement first widens into the page margin, then shrinks by up to 30%, and only then wraps onto extra lines.
 - Editing a block replaces it one line at a time, laying the new text over the boxes of the lines it replaces, so the document's own line spacing is kept.
@@ -160,4 +165,8 @@ zzPDF reports whether a PDF carries digital signatures and what they say about t
 
 ## Project Status
 
-zzPDF is an early working release. Editing page text replaces runs of text on top of the page; rewriting the original content stream in place, with reflow across an entire document, will require an additional PDF engine in a future version.
+zzPDF is an early working release. Page-text editing replaces selected lines and blocks; it is not a word processor with reflow across an entire document.
+
+## App Icon
+
+The transparent master artwork is `AppResources/AppIcon-source.png`. Run `zsh scripts/build-icon.sh` to regenerate all icon sizes and `AppIcon.icns`, then rebuild the app. The welcome screen reads the application's icon, so both stay in sync. See `AppResources/IconDesign.md` for the artwork brief.

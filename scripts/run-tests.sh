@@ -60,10 +60,10 @@ for suite in "${SUITES[@]}"; do
         continue
     fi
 
-    if "$binary" 2>/dev/null; then
+    if "$binary" >"$BUILD_DIR/$suite.log" 2>&1; then
+        cat "$BUILD_DIR/$suite.log"
         continue
     fi
-    "$binary" >/dev/null 2>"$BUILD_DIR/$suite.log" || true
     # All of it, not the last line: a failure that spans lines says the most in the ones
     # before the last, and on CI the log is the only thing there is to go on.
     echo "  $suite failed:"

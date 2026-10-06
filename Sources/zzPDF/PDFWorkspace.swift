@@ -528,18 +528,19 @@ final class PDFWorkspace: ObservableObject {
     /// Writes a copy in which annotations are part of the page. Redacted pages are
     /// rasterized first: burning in a black rectangle only hides the text visually, and
     /// the words underneath stay selectable and searchable in the exported file.
-    private func writeFlattenedCopy(
+    func writeFlattenedCopy(
         of document: PDFDocument,
         to url: URL,
         extraOptions: [PDFDocumentWriteOption: Any]
     ) -> Bool {
         var options: [PDFDocumentWriteOption: Any] = extraOptions
         options[.burnInAnnotationsOption] = true
-        guard let flattened = RedactionFlattener.rasterizingRedactedPages(of: document) else {
+        if RedactionFlattener.redactedPageIndexes(in: document).isEmpty {
             options[.saveImagesAsJPEGOption] = true
             options[.optimizeImagesForScreenOption] = true
             return document.write(to: url, withOptions: options)
         }
+        guard let flattened = RedactionFlattener.rasterizingRedactedPages(of: document) else { return false }
         return flattened.write(to: url, withOptions: options)
     }
 
@@ -935,6 +936,10 @@ final class PDFWorkspace: ObservableObject {
             presentError("That PDF could not be opened for comparison.")
             return
         }
+        guard let originalData = document.dataRepresentation(), let revisedData = other.dataRepresentation() else {
+            presentError("The documents could not be prepared for comparison.")
+            return
+        }
         comparedDocument = other
         comparedName = url.deletingPathExtension().lastPathComponent
         comparison = []
@@ -943,7 +948,13 @@ final class PDFWorkspace: ObservableObject {
         statusMessage = "Comparing with \(comparedName)…"
 
         Task { @MainActor in
-            let results = DocumentComparer.compare(document, with: other)
+            let results = await DocumentComparer.compareSnapshots(originalData, with: revisedData)
+            guard pdfDocument === document, comparedDocument === other else { return }
+            guard let results else {
+                isComparing = false
+                statusMessage = "The documents could not be compared"
+                return
+            }
             comparison = results
             isComparing = false
             let changed = results.filter(\.change.isChange).count

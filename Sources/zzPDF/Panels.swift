@@ -53,7 +53,9 @@ struct PageSidebar: View {
             case .search: searchList
             }
         }
-        .onReceive(workspace.$searchFocusRequest.dropFirst()) { _ in mode = .search }
+        .onReceive(workspace.$searchFocusRequest) { request in
+            if request > 0 { mode = .search }
+        }
         .frame(minWidth: 155, idealWidth: 195, maxWidth: 260)
         .background(Color(nsColor: .controlBackgroundColor))
     }
@@ -198,6 +200,9 @@ struct PageSidebar: View {
     @ViewBuilder
     private var searchList: some View {
         VStack(spacing: 0) {
+            SearchField()
+                .padding(.horizontal, 10)
+                .padding(.vertical, 8)
             VStack(alignment: .leading, spacing: 6) {
                 Toggle("Match case", isOn: $workspace.searchMatchesCase)
                 Toggle("Whole words", isOn: $workspace.searchWholeWords)

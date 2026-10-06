@@ -171,8 +171,11 @@ struct ContentView: View {
         }
         ToolbarItemGroup(placement: .primaryAction) {
             PageLayoutMenu()
-            SearchField()
-                .frame(width: 210)
+            Button { workspace.focusSearch() } label: {
+                Image(systemName: "magnifyingglass")
+            }
+            .help("Find in PDF (Command-F)")
+            .disabled(!workspace.hasDocument)
             Button { workspace.inspectorVisible.toggle() } label: {
                 Image(systemName: "sidebar.right")
             }
@@ -183,7 +186,6 @@ struct ContentView: View {
 
 struct WelcomeView: View {
     @EnvironmentObject private var workspace: PDFWorkspace
-    @State private var hovering = false
 
     var body: some View {
         ZStack {
@@ -192,7 +194,8 @@ struct WelcomeView: View {
                 startPoint: .topLeading,
                 endPoint: .bottomTrailing
             )
-            VStack(spacing: 22) {
+            ScrollView {
+            VStack(spacing: 24) {
                 // The app's own icon, rather than a drawing of one: a second version of it
                 // here is a second version to keep in step, and it had already drifted.
                 Image(nsImage: NSApp?.applicationIconImage
@@ -205,8 +208,10 @@ struct WelcomeView: View {
                 VStack(spacing: 8) {
                     Text("zzPDF")
                         .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Everything you need to work with PDFs, without the clutter.")
+                    Text("Edit the text. Make it yours.")
                         .font(.title3)
+                        .foregroundStyle(.secondary)
+                    Text("A complete PDF workspace, right on your Mac.")
                         .foregroundStyle(.secondary)
                 }
                 HStack(spacing: 12) {
@@ -234,15 +239,24 @@ struct WelcomeView: View {
                     }
                     .padding(.top, 4)
                 }
-                HStack(spacing: 26) {
-                    WelcomeFeature(icon: "highlighter", text: "Annotate")
-                    WelcomeFeature(icon: "signature", text: "Sign")
-                    WelcomeFeature(icon: "rectangle.3.group", text: "Organize")
-                    WelcomeFeature(icon: "lock.shield", text: "Protect")
+                LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
+                    WelcomeFeature(icon: "text.cursor", text: "Edit text", detail: "Rewrite existing text or add your own.")
+                    WelcomeFeature(icon: "highlighter", text: "Annotate & draw", detail: "Highlight, underline, add notes and shapes.")
+                    WelcomeFeature(icon: "signature", text: "Fill & sign", detail: "Complete forms and add your graphic signature.")
+                    WelcomeFeature(icon: "rectangle.3.group", text: "Organize pages", detail: "Merge, split, reorder, crop and rotate.")
+                    WelcomeFeature(icon: "doc.text.viewfinder", text: "Search & compare", detail: "Make scans searchable with OCR. Compare PDFs.")
+                    WelcomeFeature(icon: "square.and.arrow.up", text: "Finish & share", detail: "Watermarks, page numbers, redaction and export.")
                 }
-                .padding(.top, 12)
+                .padding(.top, 4)
+                Label("On your Mac. Your documents stay with you.", systemImage: "lock.shield")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
             }
-            .padding(60)
+            .frame(maxWidth: 760)
+            .padding(.horizontal, 36)
+            .padding(.vertical, 32)
+            .frame(maxWidth: .infinity)
+            }
         }
     }
 }
@@ -250,12 +264,25 @@ struct WelcomeView: View {
 struct WelcomeFeature: View {
     let icon: String
     let text: String
+    let detail: String
     var body: some View {
-        VStack(spacing: 7) {
-            Image(systemName: icon).font(.title2).foregroundStyle(.tint)
-            Text(text).font(.caption).foregroundStyle(.secondary)
+        VStack(alignment: .leading, spacing: 8) {
+            Image(systemName: icon)
+                .font(.system(size: 21, weight: .medium))
+                .foregroundStyle(.tint)
+                .frame(height: 26)
+                .accessibilityHidden(true)
+            Text(text).font(.headline)
+            Text(detail)
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
         }
-        .frame(width: 70)
+        .frame(maxWidth: .infinity, minHeight: 108, alignment: .topLeading)
+        .padding(16)
+        .background(.background.opacity(0.65), in: RoundedRectangle(cornerRadius: 14))
+        .overlay(RoundedRectangle(cornerRadius: 14).strokeBorder(.primary.opacity(0.06)))
+        .accessibilityElement(children: .combine)
     }
 }
 

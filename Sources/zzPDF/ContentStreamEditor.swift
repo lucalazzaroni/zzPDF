@@ -36,6 +36,7 @@ enum ContentStreamEditor {
         var state = TextState()
         var operands: [Item] = []
         var blanks: [(range: Range<Int>, replacement: [UInt8])] = []
+        var needsTextPosition = false
 
         while let item = scanner.next() {
             guard case .operatorName(let name) = item.kind else {
@@ -47,37 +48,52 @@ enum ContentStreamEditor {
             case "Q": if let last = state.stack.popLast() { state.ctm = last }
             case "cm":
                 if let m = matrix(from: operands, bytes: bytes) { state.ctm = m.concatenating(state.ctm) }
-            case "BT": state.text = .identity; state.line = .identity
+            case "BT":
+                state.text = .identity; state.line = .identity
+                needsTextPosition = false
             case "Tm":
-                if let m = matrix(from: operands, bytes: bytes) { state.line = m; state.text = m }
+                if let m = matrix(from: operands, bytes: bytes) {
+                    state.line = m; state.text = m
+                    needsTextPosition = false
+                }
             case "Td":
                 if let v = numbers(from: operands, bytes: bytes, count: 2) {
                     state.line = CGAffineTransform(translationX: v[0], y: v[1]).concatenating(state.line)
                     state.text = state.line
+                    needsTextPosition = false
                 }
             case "TD":
                 if let v = numbers(from: operands, bytes: bytes, count: 2) {
                     state.leading = -v[1]
                     state.line = CGAffineTransform(translationX: v[0], y: v[1]).concatenating(state.line)
                     state.text = state.line
+                    needsTextPosition = false
                 }
             case "TL":
                 if let v = numbers(from: operands, bytes: bytes, count: 1) { state.leading = v[0] }
             case "T*":
                 state.line = CGAffineTransform(translationX: 0, y: -state.leading).concatenating(state.line)
                 state.text = state.line
+                needsTextPosition = false
             case "Tj", "TJ", "'", "\"":
                 if name == "'" || name == "\"" {
                     // Both move to the next line before drawing.
                     state.line = CGAffineTransform(translationX: 0, y: -state.leading).concatenating(state.line)
                     state.text = state.line
+                    needsTextPosition = false
                 }
+                // A show operator advances by font-specific glyph widths. This parser
+                // does not resolve those widths. Guessing the next origin, or erasing
+                // the previous advance, can remove/move unrelated text. Keep the
+                // complete stream unchanged and let the writer use its visual cover.
+                guard !needsTextPosition else { return stream }
                 let combined = state.text.concatenating(state.ctm)
                 let origin = CGPoint(x: combined.tx, y: combined.ty)
                 if rects.contains(where: { $0.contains(origin) }),
                    let target = drawnOperand(of: name, in: operands) {
                     blanks.append((target.range, target.isArray ? Array("[]".utf8) : Array("()".utf8)))
                 }
+                needsTextPosition = true
             default: break
             }
             operands.removeAll(keepingCapacity: true)

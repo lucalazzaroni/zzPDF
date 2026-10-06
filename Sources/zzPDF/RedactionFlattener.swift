@@ -37,8 +37,8 @@ enum RedactionFlattener {
     }
 
     /// A copy of `document` in which every redacted page has become an image of itself.
-    /// Returns `nil` when there is nothing to redact, so the caller can export the
-    /// document unchanged and keep its text intact.
+    /// Returns `nil` when there is nothing to redact OR any page cannot be rendered.
+    /// Callers must check for redactions first and fail closed on a rendering error.
     static func rasterizingRedactedPages(of document: PDFDocument) -> PDFDocument? {
         let redacted = redactedPageIndexes(in: document)
         guard !redacted.isEmpty else { return nil }
@@ -47,7 +47,7 @@ enum RedactionFlattener {
               copy.pageCount == document.pageCount else { return nil }
 
         for index in redacted {
-            guard let page = copy.page(at: index), let rendered = rasterized(page) else { continue }
+            guard let page = copy.page(at: index), let rendered = rasterized(page) else { return nil }
             copy.removePage(at: index)
             copy.insert(rendered, at: index)
         }

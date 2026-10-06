@@ -7,7 +7,7 @@ import PDFKit
 /// changed". Pages whose text matches are then rendered and compared pixel by pixel, which
 /// catches moved images, different colours, and edits to pages that carry no text at all.
 enum DocumentComparer {
-    enum Change: String {
+    enum Change: String, Sendable {
         case identical, textChanged, appearanceChanged, added, removed
 
         var label: String {
@@ -33,7 +33,7 @@ enum DocumentComparer {
         var isChange: Bool { self != .identical }
     }
 
-    struct PageResult: Identifiable {
+    struct PageResult: Identifiable, Sendable {
         let id = UUID()
         let pageNumber: Int
         let change: Change
@@ -44,6 +44,16 @@ enum DocumentComparer {
     /// Pixels below this share are treated as rendering noise rather than a real change.
     static let appearanceThreshold = 0.002
     private static let compareDPI: CGFloat = 72
+
+    /// Use independent snapshots on the worker: PDFKit documents used by the canvas
+    /// must not also be rendered or searched concurrently by the comparison.
+    static func compareSnapshots(_ original: Data, with revised: Data) async -> [PageResult]? {
+        await Task.detached(priority: .userInitiated) {
+            guard let left = PDFDocument(data: original), let right = PDFDocument(data: revised),
+                  !left.isLocked, !right.isLocked else { return nil }
+            return compare(left, with: right)
+        }.value
+    }
 
     static func compare(_ original: PDFDocument, with revised: PDFDocument) -> [PageResult] {
         let count = max(original.pageCount, revised.pageCount)

@@ -259,10 +259,10 @@ final class WorkspaceRegistry: ObservableObject {
     }
 
     /// Told by the first window, which is where the preferences are to hand.
-    func prepare(with preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore = .shared) {
+    func prepare(with preferences: AppPreferences, recoveryStore: TemporaryRecoveryStore? = nil) {
         guard self.preferences == nil else { return }
         self.preferences = preferences
-        self.recoveryStore = recoveryStore
+        self.recoveryStore = recoveryStore ?? .shared
     }
 
     /// AppKit has finished launching the app, so what it was launched for is now known.

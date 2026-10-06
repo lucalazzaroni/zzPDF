@@ -151,11 +151,14 @@ enum TextReplacementWriter {
 
     /// Moves the reader's annotations from the page that was rewritten onto its replacement.
     static func transferAnnotations(from page: PDFPage, to rewritten: PDFPage) {
-        let origin = page.bounds(for: .cropBox).origin
+        let sourceOrigin = page.bounds(for: .cropBox).origin
+        let targetOrigin = rewritten.bounds(for: .cropBox).origin
+        let dx = targetOrigin.x - sourceOrigin.x
+        let dy = targetOrigin.y - sourceOrigin.y
         for annotation in page.annotations {
             page.removeAnnotation(annotation)
-            if origin != .zero {
-                annotation.bounds = annotation.bounds.offsetBy(dx: -origin.x, dy: -origin.y)
+            if dx != 0 || dy != 0 {
+                annotation.bounds = annotation.bounds.offsetBy(dx: dx, dy: dy)
             }
             rewritten.addAnnotation(annotation)
         }
