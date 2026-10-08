@@ -27,6 +27,7 @@ final class WorkspaceRegistry: ObservableObject {
     /// marking the ones we ask for was marking the wrong half.
     private(set) var standaloneWindowsPending = 0
     @Published private var pendingDocumentURLs: [URL] = []
+    private var documentWindowRequested = false
     @Published private var restoreQueue: [RestoreItem] = []
     private var didOpenRestoreWindows = false
     /// Cleared once AppKit says the launch is over, which is the first moment the app can
@@ -186,10 +187,8 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Opens a document that arrived from the Finder, a drop, or the recent-documents menu.
     ///
-    /// Everything routes through here, and only here, because an open request reaches every
-    /// window at once: `onOpenURL` is part of the window's own view, and the notification it
-    /// posts is a broadcast. Letting each window act on it opened one new window for every
-    /// window already on screen.
+    /// AppKit delivers Finder requests here once. Recent documents and drops use the same
+    /// route, so SwiftUI never creates a second, empty window for the same open event.
     func openDocument(at url: URL) {
         if isLaunching { openedDuringLaunch = true }
         let candidates = orderedWorkspaces()
@@ -210,7 +209,7 @@ final class WorkspaceRegistry: ObservableObject {
             window(for: candidates[index])?.makeKeyAndOrderFront(nil)
         case .newWindow:
             enqueueDocument(url)
-            requestWindow()
+            requestPendingDocumentWindow()
         }
     }
 
@@ -225,22 +224,26 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Every workspace on screen, the one that appeared most recently first.
     ///
-    /// Newest first, and deliberately not the key window first. A file opened while the app
-    /// is running arrives in a window SwiftUI has just made for it, and that window is not
-    /// yet the key one — so going by the key window put the document in whichever window
-    /// the reader happened to be looking at and left the new one showing the welcome
-    /// screen, which is the one they were shown.
-    ///
-    /// Taken from the workspaces rather than from the windows: a window registers itself
-    /// from `updateNSView`, which SwiftUI runs a turn later, so at launch — exactly when a
-    /// file is being opened — the window map is still empty.
+    /// Prefer the newest empty tab. Use workspace registration rather than the window map:
+    /// SwiftUI configures the native window a turn later, and a launch-time file may arrive
+    /// before that map has any entries.
     private func orderedWorkspaces() -> [PDFWorkspace] {
         arrivals.compactMap(\.value).reversed()
     }
 
     /// The window showing `workspace`, once SwiftUI has got round to telling us about it.
     private func window(for workspace: PDFWorkspace) -> NSWindow? {
-        (NSApp?.orderedWindows ?? []).first { workspacesByWindow.object(forKey: $0) === workspace }
+        configuredWindows.allObjects.first { workspacesByWindow.object(forKey: $0) === workspace }
+    }
+
+    func windowDidClose(_ window: NSWindow) {
+        if let workspace = workspacesByWindow.object(forKey: window) {
+            workspaces.remove(workspace)
+            arrivals.removeAll { $0.value == nil || $0.value === workspace }
+        }
+        workspacesByWindow.removeObject(forKey: window)
+        configuredWindows.remove(window)
+        delegateProxies.removeObject(forKey: window)
     }
 
     /// Queues a file for the next window to open, so a document arriving from the Finder
@@ -255,7 +258,21 @@ final class WorkspaceRegistry: ObservableObject {
     }
 
     func dequeueDocument() -> URL? {
-        pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
+        guard !pendingDocumentURLs.isEmpty else { return nil }
+        documentWindowRequested = false
+        let url = pendingDocumentURLs.removeFirst()
+        // Let the arriving scene load its document before asking for the next scene.
+        DispatchQueue.main.async { [weak self] in self?.requestPendingDocumentWindow() }
+        return url
+    }
+
+    private func requestPendingDocumentWindow() {
+        // During launch SwiftUI supplies the initial window. Asking for one before it
+        // appears is what leaves an extra welcome tab next to the requested document.
+        guard !isLaunching, hasPendingDocuments, !documentWindowRequested,
+              let requestNewWindow else { return }
+        documentWindowRequested = true
+        requestNewWindow()
     }
 
     /// Told by the first window, which is where the preferences are to hand.
@@ -290,6 +307,7 @@ final class WorkspaceRegistry: ObservableObject {
             includingLastSession: !openedDuringLaunch
         )
         handOutRestores()
+        requestPendingDocumentWindow()
     }
 
     /// Gives each queued document to a window with nothing in it, and asks for more windows
@@ -406,6 +424,13 @@ private final class DocumentWindowDelegateProxy: NSObject, NSWindowDelegate {
         guard originalDelegate?.windowShouldClose?(sender) ?? true else { return false }
         guard let workspace, let registry else { return true }
         return registry.shouldClose(window: sender, workspace: workspace)
+    }
+
+    func windowWillClose(_ notification: Notification) {
+        if let window = notification.object as? NSWindow {
+            registry?.windowDidClose(window)
+        }
+        originalDelegate?.windowWillClose?(notification)
     }
 
     override func responds(to selector: Selector!) -> Bool {

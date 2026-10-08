@@ -1,12 +1,14 @@
 import AppKit
 import SwiftUI
 
-/// Tells the registry when AppKit has finished launching.
-///
-/// That moment is the first at which the app can tell a plain launch from one that was
-/// asked to open a file: SwiftUI takes the open event itself and reports it through
-/// `onOpenURL`, which lands just before this.
+/// Receives Finder open requests without asking SwiftUI to create an event window.
 final class AppDelegate: NSObject, NSApplicationDelegate {
+    func application(_ application: NSApplication, open urls: [URL]) {
+        for url in urls where url.isFileURL && url.pathExtension.lowercased() == "pdf" {
+            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
+        }
+    }
+
     func applicationDidFinishLaunching(_ notification: Notification) {
         NotificationCenter.default.post(name: .zzPDFDidFinishLaunching, object: nil)
     }
@@ -24,6 +26,7 @@ struct ZZPDFApp: App {
         }
         .windowStyle(.titleBar)
         .windowToolbarStyle(.automatic)
+        .handlesExternalEvents(matching: [])
         .commands { AppCommands(registry: registry, preferences: preferences) }
         Settings {
             SettingsView()

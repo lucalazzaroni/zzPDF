@@ -73,10 +73,6 @@ struct ContentView: View {
             FreeTextEditorSheet()
                 .environmentObject(workspace)
         }
-        .onOpenURL { url in
-            guard url.pathExtension.lowercased() == "pdf" else { return }
-            NotificationCenter.default.post(name: .zzPDFOpenDocument, object: url)
-        }
         .onDrop(of: [.fileURL], isTargeted: $dropTargeted) { providers in
             receiveDroppedFiles(providers)
         }

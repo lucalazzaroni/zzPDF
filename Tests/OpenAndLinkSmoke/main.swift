@@ -12,6 +12,7 @@ struct OpenAndLinkSmoke {
         defer { try? FileManager.default.removeItem(at: directory) }
 
         openRequests(in: directory)
+        reopenClosedWindow(in: directory)
         tabTitles()
         welcome(in: directory)
         links(in: directory)
@@ -69,6 +70,34 @@ struct OpenAndLinkSmoke {
     }
 
     // MARK: - When the welcome screen is offered
+
+    private static func reopenClosedWindow(in directory: URL) {
+        _ = NSApplication.shared
+        let preferences = AppPreferences(defaults: UserDefaults(suiteName: "it.lucalazzaroni.zzpdf.tests.closed-window")!)
+        let registry = WorkspaceRegistry()
+        registry.finishLaunching()
+        let workspace = PDFWorkspace(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: directory.appendingPathComponent("ClosedRecovery"))
+        )
+        let url = makePDF(in: directory)
+        workspace.load(url)
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        registry.configure(window: window, workspace: workspace)
+        check(registry.window(showing: url) === window, "The document window was not registered")
+        window.close()
+        check(registry.window(showing: url) == nil, "The closed window remained registered")
+        // Keep both objects alive: SwiftUI can retain a closed scene for some time.
+        var requested = 0
+        registry.requestNewWindow = { requested += 1 }
+        registry.openDocument(at: url)
+        check(requested == 1, "Reopening a closed document silently tried to front a dead window")
+        check(workspace.hasDocument, "The retained workspace was unexpectedly cleared")
+    }
 
     private static func welcome(in directory: URL) {
         let suiteName = "it.lucalazzaroni.zzpdf.tests.welcome.\(UUID().uuidString)"
@@ -222,6 +251,7 @@ struct OpenAndLinkSmoke {
 
         // So does a document opened when every window is already busy.
         let full = WorkspaceRegistry()
+        full.finishLaunching()
         full.register(holder)
         var opened = 0
         full.requestNewWindow = { opened += 1 }
@@ -234,6 +264,35 @@ struct OpenAndLinkSmoke {
         // New Window still means a window.
         full.willOpenStandaloneWindow()
         check(full.standaloneWindowsPending == 1, "New Window did not ask for a window")
+
+        // Finder can deliver a cold-launch request before the initial scene exists.
+        // That scene must claim the file; requesting another scene would leave a welcome
+        // tab behind. Repeated events must not create another window either.
+        let cold = WorkspaceRegistry()
+        var coldWindows = 0
+        cold.requestNewWindow = { coldWindows += 1 }
+        let fixture = makePDF(in: directory)
+        cold.openDocument(at: fixture)
+        cold.openDocument(at: fixture)
+        check(coldWindows == 0, "A cold open created an extra window before the initial scene")
+        check(cold.dequeueDocument() == fixture, "The initial scene could not claim the Finder file")
+        check(!cold.hasPendingDocuments, "The repeated Finder event left a duplicate queued file")
+        let initial = PDFWorkspace(preferences: preferences, recoveryStore: store)
+        initial.load(fixture)
+        cold.register(initial)
+        cold.finishLaunching()
+        cold.openDocument(at: fixture)
+        check(coldWindows == 0, "Opening the same document again created a welcome window")
+
+        // Several requests arriving before a new scene appears share one window request.
+        let batch = WorkspaceRegistry()
+        batch.finishLaunching()
+        batch.register(initial)
+        var batchWindows = 0
+        batch.requestNewWindow = { batchWindows += 1 }
+        batch.openDocument(at: directory.appendingPathComponent("second.pdf"))
+        batch.openDocument(at: directory.appendingPathComponent("third.pdf"))
+        check(batchWindows == 1, "Concurrent file requests created redundant windows")
     }
 
     // MARK: - What a tab is called
