@@ -201,15 +201,8 @@ struct WelcomeView: View {
                     .interpolation(.high)
                     .frame(width: 96, height: 96)
                     .shadow(color: .black.opacity(0.18), radius: 14, y: 6)
-                VStack(spacing: 8) {
-                    Text("zzPDF")
-                        .font(.system(size: 30, weight: .bold, design: .rounded))
-                    Text("Edit the text. Make it yours.")
-                        .font(.title3)
-                        .foregroundStyle(.secondary)
-                    Text("A complete PDF workspace, right on your Mac.")
-                        .foregroundStyle(.secondary)
-                }
+                Text("zzPDF")
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
                 HStack(spacing: 12) {
                     Button("Open a PDF…") { workspace.openDocument() }
                         .buttonStyle(.borderedProminent)
@@ -236,17 +229,14 @@ struct WelcomeView: View {
                     .padding(.top, 4)
                 }
                 LazyVGrid(columns: [GridItem(.flexible()), GridItem(.flexible()), GridItem(.flexible())], spacing: 14) {
-                    WelcomeFeature(icon: "text.cursor", text: "Edit text", detail: "Rewrite existing text or add your own.")
+                    WelcomeFeature(icon: "text.cursor", text: "Edit text", detail: "Edit existing text and insert new text.")
                     WelcomeFeature(icon: "highlighter", text: "Annotate & draw", detail: "Highlight, underline, add notes and shapes.")
                     WelcomeFeature(icon: "signature", text: "Fill & sign", detail: "Complete forms and add your graphic signature.")
                     WelcomeFeature(icon: "rectangle.3.group", text: "Organize pages", detail: "Merge, split, reorder, crop and rotate.")
                     WelcomeFeature(icon: "doc.text.viewfinder", text: "Search & compare", detail: "Make scans searchable with OCR. Compare PDFs.")
-                    WelcomeFeature(icon: "square.and.arrow.up", text: "Finish & share", detail: "Watermarks, page numbers, redaction and export.")
+                    WelcomeFeature(icon: "square.and.arrow.up", text: "Export", detail: "Watermarks, page numbers, redaction and export.")
                 }
                 .padding(.top, 4)
-                Label("On your Mac. Your documents stay with you.", systemImage: "lock.shield")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
             }
             .frame(maxWidth: 760)
             .padding(.horizontal, 36)
