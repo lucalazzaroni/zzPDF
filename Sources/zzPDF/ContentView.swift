@@ -34,10 +34,14 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             mainContent
-            statusBar
+            // Full screen shows the page and nothing else. The bars are hidden by the view
+            // rather than switched off in the workspace, so leaving full screen brings back
+            // exactly what was there before.
+            if !workspace.isFullScreen { statusBar }
         }
         .background(Color(nsColor: .windowBackgroundColor))
         .toolbar { appToolbar }
+        .toolbar(workspace.isFullScreen ? .hidden : .visible, for: .windowToolbar)
         .sheet(isPresented: $workspace.showSignaturePad) {
             SignatureSheet(strokes: $workspace.savedSignature)
                 .environmentObject(workspace)
@@ -96,11 +100,11 @@ struct ContentView: View {
     private var mainContent: some View {
         if workspace.hasDocument {
             HSplitView {
-                if workspace.sidebarVisible { PageSidebar() }
+                if workspace.sidebarVisible, !workspace.isFullScreen { PageSidebar() }
                 PDFCanvas()
                     .environmentObject(workspace)
                     .frame(minWidth: 480)
-                if workspace.inspectorVisible { InspectorPanel() }
+                if workspace.inspectorVisible, !workspace.isFullScreen { InspectorPanel() }
             }
         } else if !workspace.isSettling, registry.shouldOfferWelcome {
             WelcomeView()

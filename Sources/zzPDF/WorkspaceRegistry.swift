@@ -479,6 +479,19 @@ private final class DocumentWindowDelegateProxy: NSObject, NSWindowDelegate {
         return registry.shouldClose(window: sender, workspace: workspace)
     }
 
+    // Full screen is for reading: everything around the page goes while the window is full
+    // screen and comes back as it leaves. Told as the change begins rather than once it has
+    // finished, so the bars go with the animation instead of after it.
+    func windowWillEnterFullScreen(_ notification: Notification) {
+        workspace?.isFullScreen = true
+        originalDelegate?.windowWillEnterFullScreen?(notification)
+    }
+
+    func windowWillExitFullScreen(_ notification: Notification) {
+        workspace?.isFullScreen = false
+        originalDelegate?.windowWillExitFullScreen?(notification)
+    }
+
     func windowWillClose(_ notification: Notification) {
         if let window = notification.object as? NSWindow {
             registry?.windowDidClose(window)

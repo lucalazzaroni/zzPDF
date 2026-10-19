@@ -11,6 +11,7 @@ struct OpenAndLinkSmoke {
         try! FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: directory) }
 
+        fullScreen(in: directory)
         openRequests(in: directory)
         reopenClosedWindow(in: directory)
         tabTitles()
@@ -67,6 +68,46 @@ struct OpenAndLinkSmoke {
             WorkspaceRegistry.outcome(for: first, among: mixed) == .front(1),
             "An empty window was filled although the document was already open"
         )
+    }
+
+    // MARK: - Full screen
+
+    private static func fullScreen(in directory: URL) {
+        _ = NSApplication.shared
+        let preferences = AppPreferences(defaults: UserDefaults(suiteName: "it.lucalazzaroni.zzpdf.tests.full-screen")!)
+        preferences.sidebarVisible = true
+        preferences.inspectorVisible = true
+        let registry = WorkspaceRegistry()
+        registry.finishLaunching()
+        let workspace = PDFWorkspace(
+            preferences: preferences,
+            recoveryStore: TemporaryRecoveryStore(directoryURL: directory.appendingPathComponent("FullScreen"))
+        )
+        workspace.load(makePDF(in: directory))
+        let window = NSWindow(
+            contentRect: NSRect(x: 0, y: 0, width: 400, height: 300),
+            styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false
+        )
+        window.isReleasedWhenClosed = false
+        registry.configure(window: window, workspace: workspace)
+        let sidebar = workspace.sidebarVisible
+        let inspector = workspace.inspectorVisible
+
+        // Full screen is for reading: the window says so as it goes, and the page is then
+        // all there is to see.
+        check(!workspace.isFullScreen, "A new window thought it was full screen")
+        window.delegate?.windowWillEnterFullScreen?(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
+        check(workspace.isFullScreen, "Going full screen left the bars where they were")
+
+        // Coming back puts back exactly what was there. The bars are hidden by the view, not
+        // switched off, so the reader's own choices survive the round trip.
+        window.delegate?.windowWillExitFullScreen?(Notification(name: NSWindow.willExitFullScreenNotification, object: window))
+        check(!workspace.isFullScreen, "Leaving full screen did not bring the bars back")
+        check(
+            workspace.sidebarVisible == sidebar && workspace.inspectorVisible == inspector,
+            "Full screen changed which panels the reader had chosen to show"
+        )
+        window.close()
     }
 
     // MARK: - When the welcome screen is offered

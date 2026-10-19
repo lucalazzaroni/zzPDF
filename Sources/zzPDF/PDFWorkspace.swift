@@ -198,6 +198,8 @@ final class PDFWorkspace: ObservableObject {
     /// app: a new empty window must not blank the ones already on screen. A sixth of a
     /// second, which covers it without being a wait anyone notices.
     @Published private(set) var isSettling = true
+    /// Whether the window is full screen, where the page is all there is to see.
+    @Published var isFullScreen = false
     /// The last thing that went wrong, kept so a test can say what it was.
     private(set) var lastErrorMessage: String?
     var autoFillCandidates: [FormFieldMatcher.Match] = []
