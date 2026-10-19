@@ -27,9 +27,9 @@ final class WorkspaceRegistry: ObservableObject {
     /// marking the ones we ask for was marking the wrong half.
     private(set) var standaloneWindowsPending = 0
     @Published private var pendingDocumentURLs: [URL] = []
-    private var documentWindowRequested = false
+    /// A window has been asked for and has not arrived yet.
+    private var windowRequestInFlight = false
     @Published private var restoreQueue: [RestoreItem] = []
-    private var didOpenRestoreWindows = false
     /// Cleared once AppKit says the launch is over, which is the first moment the app can
     /// know whether it was started to open a file.
     @Published private(set) var isLaunching = true
@@ -40,6 +40,19 @@ final class WorkspaceRegistry: ObservableObject {
     /// Asks SwiftUI for another window in the document group. Set by each window as it
     /// appears, since only a view can reach the `openWindow` action.
     var requestNewWindow: (() -> Void)?
+    /// The same, reached through the menu commands, which exist before any window does.
+    ///
+    /// A launch to open a file shows no window of its own: the scene is told to leave
+    /// external events alone, so SwiftUI does not create one for the event, and it does not
+    /// create the usual first window either. The file then waited for a window to ask for
+    /// it, and the only thing able to ask for a window was a window — so double-clicking a
+    /// PDF with nothing to reopen started the app and showed nothing at all.
+    private var commandWindowOpener: (() -> Void)?
+    private var windowOpener: (() -> Void)? { requestNewWindow ?? commandWindowOpener }
+    /// The document the reader asked for while the app was starting.
+    private weak var requestedDocument: PDFWorkspace?
+    /// Set when the launch finished before anything had told the registry its preferences.
+    private var restoreWhenPrepared = false
     private var openObserver: (any NSObjectProtocol)?
     private var launchObserver: (any NSObjectProtocol)?
 
@@ -89,7 +102,26 @@ final class WorkspaceRegistry: ObservableObject {
 
     /// Asks for somewhere to put a document: another tab of what is already open.
     func requestWindow() {
-        requestNewWindow?()
+        windowOpener?()
+    }
+
+    /// Connects the registry to what the menu commands can reach, which is available from
+    /// the moment the app starts rather than from the moment a window first appears.
+    func attach(preferences: AppPreferences, openWindow: @escaping () -> Void) {
+        commandWindowOpener = openWindow
+        prepare(with: preferences)
+    }
+
+    /// Notes that `workspace` holds the file the reader asked for, so that documents
+    /// reopening from last time take their tabs without taking the front from it.
+    func noteRequestedDocument(in workspace: PDFWorkspace) {
+        requestedDocument = workspace
+    }
+
+    private func bringRequestedDocumentForward() {
+        guard let target = requestedDocument, let window = window(for: target) else { return }
+        window.tabGroup?.selectedWindow = window
+        window.makeKeyAndOrderFront(nil)
     }
 
     func configure(window: NSWindow, workspace: PDFWorkspace) {
@@ -127,6 +159,13 @@ final class WorkspaceRegistry: ObservableObject {
             host.tabbingMode = .preferred
             host.tabbingIdentifier = window.tabbingIdentifier
             host.addTabbedWindow(window, ordered: .above)
+            // A document reopening from last time joins quietly. Every new tab used to take
+            // the front as it arrived, and these arrive after the file the reader
+            // double-clicked, so one of last session's documents ended up in front of it.
+            if workspace.wasReopened, let target = requestedDocument, target !== workspace {
+                bringRequestedDocumentForward()
+                return
+            }
             window.makeKeyAndOrderFront(nil)
         }
     }
@@ -175,8 +214,8 @@ final class WorkspaceRegistry: ObservableObject {
     /// Where a document should open, given the windows already on screen in order of
     /// preference. Kept apart from acting on it so the choice can be tested.
     static func outcome(for url: URL, among candidates: [Candidate]) -> OpenOutcome {
-        let target = url.standardizedFileURL
-        if let index = candidates.firstIndex(where: { $0.url?.standardizedFileURL == target }) {
+        let target = sameFile(url)
+        if let index = candidates.firstIndex(where: { $0.url.map(sameFile) == target }) {
             return .front(index)
         }
         if let index = candidates.firstIndex(where: \.isEmpty) {
@@ -206,18 +245,19 @@ final class WorkspaceRegistry: ObservableObject {
             }
         case .loadInto(let index):
             candidates[index].load(url)
+            noteRequestedDocument(in: candidates[index])
             window(for: candidates[index])?.makeKeyAndOrderFront(nil)
         case .newWindow:
             enqueueDocument(url)
-            requestPendingDocumentWindow()
+            requestWindowForWaitingWork()
         }
     }
 
     /// The window already showing `url`, if any.
     func window(showing url: URL) -> NSWindow? {
-        let target = url.standardizedFileURL
+        let target = sameFile(url)
         guard let workspace = workspaces.allObjects.first(where: {
-            $0.fileURL?.standardizedFileURL == target
+            $0.fileURL.map(sameFile) == target
         }) else { return nil }
         return window(for: workspace)
     }
@@ -252,27 +292,34 @@ final class WorkspaceRegistry: ObservableObject {
         // The same file can be handed to the app twice — the delegate is told about a
         // Finder "Open With" and SwiftUI reports it again — and queueing it twice would
         // leave an entry nothing ever claims.
-        let target = url.standardizedFileURL
-        guard !pendingDocumentURLs.contains(where: { $0.standardizedFileURL == target }) else { return }
+        let target = sameFile(url)
+        guard !pendingDocumentURLs.contains(where: { sameFile($0) == target }) else { return }
         pendingDocumentURLs.append(url)
     }
 
+    /// Called by every window as it appears, and answered with the file waiting for it if
+    /// there is one. Its arrival is also the moment to ask for the next window, once it has
+    /// taken what it came for.
     func dequeueDocument() -> URL? {
-        guard !pendingDocumentURLs.isEmpty else { return nil }
-        documentWindowRequested = false
-        let url = pendingDocumentURLs.removeFirst()
-        // Let the arriving scene load its document before asking for the next scene.
-        DispatchQueue.main.async { [weak self] in self?.requestPendingDocumentWindow() }
-        return url
+        windowRequestInFlight = false
+        DispatchQueue.main.async { [weak self] in self?.requestWindowForWaitingWork() }
+        return pendingDocumentURLs.isEmpty ? nil : pendingDocumentURLs.removeFirst()
     }
 
-    private func requestPendingDocumentWindow() {
-        // During launch SwiftUI supplies the initial window. Asking for one before it
-        // appears is what leaves an extra welcome tab next to the requested document.
-        guard !isLaunching, hasPendingDocuments, !documentWindowRequested,
-              let requestNewWindow else { return }
-        documentWindowRequested = true
-        requestNewWindow()
+    /// Asks for one more window while anything is still waiting for one: a file, or a
+    /// document reopening from last time.
+    ///
+    /// One at a time, and only once the last has arrived and taken its share. Counting in
+    /// advance does not work: a window asked for on behalf of a reopening document takes
+    /// a waiting file first, because the file is what the reader asked for, and the count
+    /// then came up one window short — leaving unsaved work queued with nowhere to show.
+    private func requestWindowForWaitingWork() {
+        // During launch SwiftUI may still supply a window of its own, and nothing is
+        // decided until the launch is over.
+        guard !isLaunching, hasPendingDocuments || !restoreQueue.isEmpty,
+              !windowRequestInFlight, let windowOpener else { return }
+        windowRequestInFlight = true
+        windowOpener()
     }
 
     /// Told by the first window, which is where the preferences are to hand.
@@ -280,6 +327,11 @@ final class WorkspaceRegistry: ObservableObject {
         guard self.preferences == nil else { return }
         self.preferences = preferences
         self.recoveryStore = recoveryStore ?? .shared
+        guard restoreWhenPrepared else { return }
+        restoreWhenPrepared = false
+        // A turn later, so the window that brought the preferences has taken the file
+        // meant for it before anything reopening is handed out.
+        DispatchQueue.main.async { [weak self] in self?.reopenAfterLaunch() }
     }
 
     /// AppKit has finished launching the app, so what it was launched for is now known.
@@ -297,6 +349,15 @@ final class WorkspaceRegistry: ObservableObject {
     func finishLaunching() {
         guard isLaunching else { return }
         isLaunching = false
+        if preferences == nil {
+            restoreWhenPrepared = true
+        } else {
+            reopenAfterLaunch()
+        }
+        requestWindowForWaitingWork()
+    }
+
+    private func reopenAfterLaunch() {
         guard let preferences else { return }
         // A file was asked for by name, so that is what the reader wants open, and last
         // session's documents stay shut. Work that was never saved is a different matter
@@ -307,17 +368,16 @@ final class WorkspaceRegistry: ObservableObject {
             includingLastSession: !openedDuringLaunch
         )
         handOutRestores()
-        requestPendingDocumentWindow()
     }
 
     /// Gives each queued document to a window with nothing in it, and asks for more windows
     /// when they run out.
     private func handOutRestores() {
         for workspace in orderedWorkspaces() where !workspace.hasDocument {
-            guard let item = nextRestoreItem() else { return }
+            guard let item = nextRestoreItem() else { break }
             workspace.restore(item)
         }
-        openWindowsForRemainingRestores { requestWindow() }
+        requestWindowForWaitingWork()
     }
 
     /// Whether a window with nothing open in it should offer the welcome screen.
@@ -351,22 +411,15 @@ final class WorkspaceRegistry: ObservableObject {
         let recoveries = preferences.temporaryAutosave ? store.pendingRecords() : []
         restoreQueue = Array(repeating: .recovery, count: recoveries.count)
         guard includingLastSession, preferences.restoreLastDocument else { return }
-        let recovered = Set(recoveries.compactMap(\.originalPath))
+        let recovered = Set(recoveries.compactMap(\.originalPath).map { sameFile(URL(fileURLWithPath: $0)) })
         for document in preferences.sessionDocuments
-        where !recovered.contains(document.path) && FileManager.default.fileExists(atPath: document.path) {
+        where !recovered.contains(sameFile(document.url)) && FileManager.default.fileExists(atPath: document.path) {
             restoreQueue.append(.session(document))
         }
     }
 
     func nextRestoreItem() -> RestoreItem? {
         restoreQueue.isEmpty ? nil : restoreQueue.removeFirst()
-    }
-
-    /// Opens one window for every document still waiting, once the first one is showing.
-    func openWindowsForRemainingRestores(_ openWindow: () -> Void) {
-        guard !didOpenRestoreWindows else { return }
-        didOpenRestoreWindows = true
-        for _ in restoreQueue { openWindow() }
     }
 
     func applyPreferencesToOpenDocuments() {
@@ -462,6 +515,16 @@ struct DocumentWindowAccessor: NSViewRepresentable {
 }
 
 
+
+/// What a file is, for deciding whether two references are to the same one.
+///
+/// Symbolic links resolved, not just dots and double dots tidied away. The same document
+/// was recorded once under a path through a link and once under the path it leads to —
+/// /tmp and /private/tmp, say — and compared as two different files, so a document that
+/// had unsaved work and had also been open last session came back twice.
+func sameFile(_ url: URL) -> String {
+    url.resolvingSymlinksInPath().standardizedFileURL.path
+}
 
 /// Holds a window's workspace without keeping it alive.
 private final class WeakWorkspace {

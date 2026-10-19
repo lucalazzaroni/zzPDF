@@ -63,6 +63,7 @@ private struct DocumentWindow: View {
                 workspace.settleAfterAppearing()
                 if let url = registry.dequeueDocument() {
                     workspace.load(url)
+                    registry.noteRequestedDocument(in: workspace)
                     return
                 }
                 if let item = registry.nextRestoreItem() {
@@ -82,6 +83,10 @@ struct AppCommands: Commands {
     @ObservedObject var preferences: AppPreferences
 
     var body: some Commands {
+        // The commands exist from the moment the app starts, before any window, and they can
+        // reach the action that opens one. Handing it to the registry here is what lets a
+        // file double-clicked in the Finder open when the app has no window yet.
+        let _ = registry.attach(preferences: preferences) { openWindow(id: "document") }
         CommandGroup(replacing: .newItem) {
             Button("New Window") {
                 registry.willOpenStandaloneWindow()

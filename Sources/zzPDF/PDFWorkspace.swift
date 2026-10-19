@@ -247,6 +247,9 @@ final class PDFWorkspace: ObservableObject {
     private var textSizeWasDirty = false
     private var activeSearchQuery = ""
     private var didAttemptSessionRestore = false
+    /// Whether this window was filled with something reopening from last time, rather than
+    /// with a file the reader asked for.
+    private(set) var wasReopened = false
     private var sessionDiscarded = false
     private var pendingRestoredPageIndex: Int?
     private var pendingRestoredZoom: Double?
@@ -2710,6 +2713,7 @@ final class PDFWorkspace: ObservableObject {
     /// Puts back one of the things the app had open when it last quit.
     func restore(_ item: WorkspaceRegistry.RestoreItem) {
         didAttemptSessionRestore = true
+        wasReopened = true
         switch item {
         case .recovery:
             _ = restoreTemporaryRecoveryIfAvailable()

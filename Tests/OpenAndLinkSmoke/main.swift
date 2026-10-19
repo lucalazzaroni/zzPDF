@@ -295,6 +295,31 @@ struct OpenAndLinkSmoke {
         check(batchWindows == 1, "Concurrent file requests created redundant windows")
     }
 
+    // MARK: - Recognising the same file
+
+    private static func sameFiles(in directory: URL) {
+        // A path through a symbolic link and the path it leads to are one file. Comparing
+        // them as text made a document with unsaved work, which had also been open last
+        // session, come back twice.
+        let real = directory.appendingPathComponent("vero.pdf")
+        try! Data("%PDF-1.4".utf8).write(to: real)
+        let link = directory.appendingPathComponent("collegamento.pdf")
+        try? FileManager.default.removeItem(at: link)
+        try! FileManager.default.createSymbolicLink(at: link, withDestinationURL: real)
+        check(sameFile(link) == sameFile(real), "A link and the file it leads to were taken for two files")
+        check(
+            sameFile(directory.appendingPathComponent("./vero.pdf")) == sameFile(real),
+            "A path with a dot in it was taken for a different file"
+        )
+        check(
+            WorkspaceRegistry.outcome(
+                for: link,
+                among: [WorkspaceRegistry.Candidate(url: real, isEmpty: false)]
+            ) == .front(0),
+            "Opening a file through a link opened it a second time"
+        )
+    }
+
     // MARK: - What a tab is called
 
     private static func tabTitles() {
