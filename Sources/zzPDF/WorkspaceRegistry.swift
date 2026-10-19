@@ -487,6 +487,19 @@ private final class DocumentWindowDelegateProxy: NSObject, NSWindowDelegate {
         originalDelegate?.windowWillEnterFullScreen?(notification)
     }
 
+    /// Hiding the toolbar's contents is not enough on its own: macOS can keep the strip that
+    /// held them on screen in full screen, empty, across the top of the page. Asking for the
+    /// toolbar and menu bar to hide until the pointer reaches the top edge takes the strip
+    /// away with them.
+    func window(
+        _ window: NSWindow,
+        willUseFullScreenPresentationOptions proposedOptions: NSApplication.PresentationOptions = []
+    ) -> NSApplication.PresentationOptions {
+        let proposed = originalDelegate?.window?(window, willUseFullScreenPresentationOptions: proposedOptions)
+            ?? proposedOptions
+        return proposed.union([.fullScreen, .autoHideMenuBar, .autoHideToolbar])
+    }
+
     func windowWillExitFullScreen(_ notification: Notification) {
         workspace?.isFullScreen = false
         originalDelegate?.windowWillExitFullScreen?(notification)

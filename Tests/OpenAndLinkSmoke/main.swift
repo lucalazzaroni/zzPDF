@@ -98,6 +98,14 @@ struct OpenAndLinkSmoke {
         check(!workspace.isFullScreen, "A new window thought it was full screen")
         window.delegate?.windowWillEnterFullScreen?(Notification(name: NSWindow.willEnterFullScreenNotification, object: window))
         check(workspace.isFullScreen, "Going full screen left the bars where they were")
+        // And the strip the toolbar sat in hides too, rather than staying across the top of
+        // the page with nothing in it.
+        let options = window.delegate?.window?(window, willUseFullScreenPresentationOptions: [.fullScreen]) ?? []
+        check(options.contains(.autoHideToolbar), "Full screen kept the toolbar's strip on screen")
+        check(
+            options.contains(.autoHideMenuBar) && options.contains(.fullScreen),
+            "Full screen asked for presentation options AppKit refuses without the menu bar hiding too"
+        )
 
         // Coming back puts back exactly what was there. The bars are hidden by the view, not
         // switched off, so the reader's own choices survive the round trip.
