@@ -34,6 +34,11 @@ struct ContentView: View {
     var body: some View {
         VStack(spacing: 0) {
             mainContent
+                // With the toolbar gone, full screen still keeps a margin at the top where
+                // the title bar was, and the window's own pale background shows through it.
+                // Hidden behind a white page when zoomed in; a band across the top as soon as
+                // the reader zooms out and the darker space around the page appears.
+                .ignoresSafeArea(.container, edges: workspace.isFullScreen ? .top : [])
             // Full screen shows the page and nothing else. The bars are hidden by the view
             // rather than switched off in the workspace, so leaving full screen brings back
             // exactly what was there before.
