@@ -132,6 +132,31 @@ enum TextReplacementWriter {
         objc_setAssociatedObject(page, &sourceDocumentKey, document, .OBJC_ASSOCIATION_RETAIN_NONATOMIC)
     }
 
+    /// A copy of `page` with its content redrawn as it is, the page's annotations left out,
+    /// and `extra` drawn on top in the page's own coordinates. The page keeps its rotation.
+    static func redraw(_ page: PDFPage, adding extra: (CGContext) -> Void) throws -> PDFPage {
+        let box = PDFDisplayBox.cropBox
+        let bounds = page.bounds(for: box)
+        guard bounds.width > 1, bounds.height > 1 else { throw Failure.degeneratePage(bounds.size) }
+        let data = try render(size: bounds.size) { context in
+            context.saveGState()
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            context.concatenate(page.transform(for: box).inverted())
+            let visibility = page.annotations.map { ($0, $0.shouldDisplay) }
+            for (annotation, _) in visibility { annotation.shouldDisplay = false }
+            page.draw(with: box, to: context)
+            for (annotation, wasVisible) in visibility { annotation.shouldDisplay = wasVisible }
+            context.restoreGState()
+            context.translateBy(x: -bounds.minX, y: -bounds.minY)
+            extra(context)
+        }
+        guard let document = PDFDocument(data: data) else { throw Failure.unreadable(bytes: data.count) }
+        guard let rewritten = document.page(at: 0) else { throw Failure.noPage(bytes: data.count) }
+        rewritten.rotation = page.rotation
+        keep(document, alive: rewritten)
+        return rewritten
+    }
+
     /// One page of PDF, drawn by `body`.
     private static func render(size: CGSize, body: (CGContext) -> Void) throws -> Data {
         var mediaBox = CGRect(origin: .zero, size: size)

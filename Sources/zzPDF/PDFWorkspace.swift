@@ -540,6 +540,10 @@ final class PDFWorkspace: ObservableObject {
     ) -> Bool {
         var options: [PDFDocumentWriteOption: Any] = extraOptions
         options[.burnInAnnotationsOption] = true
+        // Burning in draws an image signature as the crossed box PDFKit uses for a stamp it
+        // knows nothing about, though an ordinary write keeps the image. So the signatures
+        // go into the page first, and burning in has nothing left to get wrong.
+        let document = StampBurner.prepared(document)
         if RedactionFlattener.redactedPageIndexes(in: document).isEmpty {
             options[.saveImagesAsJPEGOption] = true
             options[.optimizeImagesForScreenOption] = true
