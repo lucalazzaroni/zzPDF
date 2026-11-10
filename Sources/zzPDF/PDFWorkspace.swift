@@ -51,6 +51,12 @@ enum CanvasTool: String, CaseIterable, Identifiable {
 
     var isLineTool: Bool { self == .line || self == .arrow }
 
+    /// Tools that put a drawing on the page. With one of these in hand, the drawing just
+    /// made stays in reach — it can be moved and reshaped without going back to Select.
+    var drawsAnnotations: Bool {
+        [.draw, .line, .arrow, .polygon, .rectangle, .oval, .signature].contains(self)
+    }
+
     var markupKind: MarkupKind? {
         switch self {
         case .highlight: .highlight
@@ -157,6 +163,9 @@ final class PDFWorkspace: ObservableObject {
     @Published var selectedShapeStrokeWidth: Double = 2.5
     @Published var selectedShapeHasFill = false
     @Published var selectedShapeFillColor: Color = .black
+    /// The outline of the selected drawing: a rectangle's or oval's border, a line, a
+    /// freehand stroke.
+    @Published var selectedDrawingStrokeColor: Color = .black
     @Published var textToInsert = "Text"
     @Published var textFontSize: Double = 15 { didSet { preferences.textFontSize = textFontSize } }
     @Published var selectedTextFontSize: Double = 15
@@ -245,6 +254,8 @@ final class PDFWorkspace: ObservableObject {
     private var textsByCover: [ObjectIdentifier: PDFAnnotation] = [:]
     private var shapeStrokeBeforeEditing: Double?
     private var shapeStrokeWasDirty = false
+    private var lastColourChange: (target: ObjectIdentifier, kind: String, original: NSColor?,
+                                   wasDirty: Bool, undoCount: Int, at: Date)?
     private var textSizeBeforeEditing: Double?
     private var textSizeWasDirty = false
     private var activeSearchQuery = ""
@@ -273,6 +284,14 @@ final class PDFWorkspace: ObservableObject {
         guard let annotation = selectedAnnotation else { return false }
         if annotation.contents == RedactionFlattener.marker { return false }
         return annotation.isSubtype(.square) || annotation.isSubtype(.circle)
+    }
+    /// Anything drawn with a stroke: shapes, lines and arrows, freehand ink. Its outline's
+    /// colour and width can be changed after it is placed.
+    var selectedAnnotationIsDrawing: Bool {
+        guard let annotation = selectedAnnotation else { return false }
+        if annotation.contents == RedactionFlattener.marker || annotation is ImageStampAnnotation { return false }
+        return annotation.isSubtype(.square) || annotation.isSubtype(.circle)
+            || annotation.isSubtype(.line) || annotation.isSubtype(.ink)
     }
     var selectedAnnotationIsFreeText: Bool {
         selectedAnnotation?.isSubtype(.freeText) == true
@@ -1309,22 +1328,58 @@ final class PDFWorkspace: ObservableObject {
     /// PDFKit reads a line annotation's endpoints relative to its own bounds, not to the
     /// page, so both are stored as offsets inside the padded rectangle.
     private func makeLineAnnotation(from start: CGPoint, to end: CGPoint, color: NSColor, arrow: Bool) -> PDFAnnotation {
-        let padding = max(12, lineWidth * 4)
+        let item = PDFAnnotation(bounds: CGRect(origin: start, size: .zero), forType: .line, withProperties: nil)
+        if arrow { item.endLineStyle = .closedArrow }
+        item.color = color
+        let border = PDFBorder()
+        border.lineWidth = lineWidth
+        item.border = border
+        setLineEndpoints(item, start: start, end: end)
+        return item
+    }
+
+    /// Where a line starts and ends, on the page.
+    func lineEndpoints(of annotation: PDFAnnotation) -> (start: CGPoint, end: CGPoint) {
+        let origin = annotation.bounds.origin
+        return (
+            CGPoint(x: origin.x + annotation.startPoint.x, y: origin.y + annotation.startPoint.y),
+            CGPoint(x: origin.x + annotation.endPoint.x, y: origin.y + annotation.endPoint.y)
+        )
+    }
+
+    /// Puts a line's ends where they are wanted on the page.
+    ///
+    /// A line's box cannot simply be stretched the way a rectangle's can: PDFKit keeps the
+    /// ends relative to the box, so stretching it moved nothing and clipped the line. The
+    /// box is rebuilt around the ends instead, with room for the stroke and arrowhead.
+    func setLineEndpoints(_ annotation: PDFAnnotation, start: CGPoint, end: CGPoint) {
+        let padding = max(12, (annotation.border?.lineWidth ?? CGFloat(lineWidth)) * 4)
         let bounds = CGRect(
             x: min(start.x, end.x) - padding,
             y: min(start.y, end.y) - padding,
             width: abs(end.x - start.x) + padding * 2,
             height: abs(end.y - start.y) + padding * 2
         )
-        let item = PDFAnnotation(bounds: bounds, forType: .line, withProperties: nil)
-        item.startPoint = CGPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
-        item.endPoint = CGPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
-        if arrow { item.endLineStyle = .closedArrow }
-        item.color = color
-        let border = PDFBorder()
-        border.lineWidth = lineWidth
-        item.border = border
-        return item
+        annotation.bounds = bounds
+        annotation.startPoint = CGPoint(x: start.x - bounds.minX, y: start.y - bounds.minY)
+        annotation.endPoint = CGPoint(x: end.x - bounds.minX, y: end.y - bounds.minY)
+    }
+
+    /// Makes moving one end of a line a single undo step.
+    func registerLineChange(
+        _ annotation: PDFAnnotation,
+        from old: (start: CGPoint, end: CGPoint),
+        to new: (start: CGPoint, end: CGPoint),
+        wasDirtyBefore: Bool
+    ) {
+        guard old.start != new.start || old.end != new.end else { return }
+        registerEdit(wasDirtyBefore: wasDirtyBefore, undo: { [weak self] in
+            self?.setLineEndpoints(annotation, start: old.start, end: old.end)
+            self?.pdfView?.needsDisplay = true
+        }, redo: { [weak self] in
+            self?.setLineEndpoints(annotation, start: new.start, end: new.end)
+            self?.pdfView?.needsDisplay = true
+        })
     }
 
     /// Polygons are drawn as straight-segment ink: PDFKit has no polygon annotation, and
@@ -1424,8 +1479,10 @@ final class PDFWorkspace: ObservableObject {
     }
 
     private func synchronizeSelectedShapeAppearance() {
-        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
-        selectedShapeStrokeWidth = Double(annotation.border?.lineWidth ?? 1)
+        guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
+        selectedDrawingStrokeColor = Color(nsColor: annotation.color)
+        selectedShapeStrokeWidth = Double(strokeWidth(of: annotation))
+        guard selectedAnnotationIsShape else { return }
         if let fill = annotation.interiorColor {
             selectedShapeHasFill = true
             selectedShapeFillColor = Color(nsColor: fill)
@@ -1494,15 +1551,17 @@ final class PDFWorkspace: ObservableObject {
     }
 
     func beginSelectedShapeStrokeChange() {
-        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
-        shapeStrokeBeforeEditing = Double(annotation.border?.lineWidth ?? 1)
+        guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
+        shapeStrokeBeforeEditing = Double(strokeWidth(of: annotation))
         shapeStrokeWasDirty = isDirty
     }
 
     func previewSelectedShapeStrokeWidth(_ width: Double) {
-        guard selectedAnnotationIsShape, let annotation = selectedAnnotation else { return }
+        guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
         applyStrokeWidth(width, to: annotation)
         selectedShapeStrokeWidth = width
+        // The next drawing comes out the way the last one was left.
+        lineWidth = width
         isDirty = true
         pdfView?.needsDisplay = true
     }
@@ -1535,20 +1594,80 @@ final class PDFWorkspace: ObservableObject {
 
     func setSelectedShapeFillColor(_ color: Color) {
         selectedShapeFillColor = color
+        shapeFillColor = color
         guard selectedAnnotationIsShape, selectedShapeHasFill, let annotation = selectedAnnotation else { return }
         let oldFill = annotation.interiorColor
         let newFill = NSColor(color)
         guard oldFill != newFill else { return }
-        let wasDirty = isDirty
         annotation.interiorColor = newFill
-        registerEdit(wasDirtyBefore: wasDirty, undo: { annotation.interiorColor = oldFill }, redo: { annotation.interiorColor = newFill })
+        registerColourChange(on: annotation, kind: "fill", from: oldFill, to: newFill) { annotation.interiorColor = $0 }
         changed("Shape fill color updated")
+    }
+
+    /// Recolours the outline of the selected drawing, and makes that the colour of the next.
+    func setSelectedDrawingStrokeColor(_ color: Color) {
+        selectedDrawingStrokeColor = color
+        annotationColor = color
+        guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
+        let old = annotation.color
+        let new = NSColor(color)
+        guard old != new else { return }
+        annotation.color = new
+        registerColourChange(on: annotation, kind: "stroke", from: old, to: new) { annotation.color = $0 ?? .black }
+        changed("Outline color updated")
+    }
+
+    /// One undo step for a change of colour, however many steps the picker reported.
+    ///
+    /// A colour picker reports every point of a drag across the wheel. Each of those used
+    /// to be an undo step of its own, so taking back one change of colour meant pressing
+    /// Command-Z once per point dragged through. Changes to the same colour of the same
+    /// annotation, coming one straight after another, now fold into the first.
+    private func registerColourChange(
+        on annotation: PDFAnnotation,
+        kind: String,
+        from old: NSColor?,
+        to new: NSColor?,
+        apply: @escaping (NSColor?) -> Void
+    ) {
+        var original = old
+        var wasDirty = isDirty
+        if let last = lastColourChange,
+           last.target == ObjectIdentifier(annotation), last.kind == kind,
+           last.undoCount == undoActions.count, Date().timeIntervalSince(last.at) < 1.5 {
+            undoActions.removeLast()
+            original = last.original
+            wasDirty = last.wasDirty
+        }
+        let restore = original
+        registerEdit(wasDirtyBefore: wasDirty, undo: { [weak self] in
+            apply(restore)
+            self?.pdfView?.needsDisplay = true
+        }, redo: { [weak self] in
+            apply(new)
+            self?.pdfView?.needsDisplay = true
+        })
+        lastColourChange = (ObjectIdentifier(annotation), kind, original, wasDirty, undoActions.count, Date())
+        pdfView?.needsDisplay = true
+    }
+
+    /// The width of a drawing's stroke, wherever that drawing keeps it.
+    func strokeWidth(of annotation: PDFAnnotation) -> CGFloat {
+        if let ink = annotation as? ScalableInkAnnotation { return ink.strokeWidth }
+        return annotation.border?.lineWidth ?? 1
     }
 
     private func applyStrokeWidth(_ width: Double, to annotation: PDFAnnotation) {
         let border = annotation.border ?? PDFBorder()
         border.lineWidth = width
         annotation.border = border
+        (annotation as? ScalableInkAnnotation)?.strokeWidth = width
+        // A line's box is padded to its width, so a thicker line needs a bigger box or its
+        // ends and arrowhead are clipped.
+        if annotation.isSubtype(.line) {
+            let (start, end) = lineEndpoints(of: annotation)
+            setLineEndpoints(annotation, start: start, end: end)
+        }
         pdfView?.needsDisplay = true
     }
 

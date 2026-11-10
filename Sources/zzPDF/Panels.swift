@@ -375,7 +375,13 @@ struct InspectorPanel: View {
             if workspace.activeTool == .editText, workspace.selectedAnnotationIsFreeText {
                 replacedTextControls
             }
-            if ![.select, .fillForms, .editText, .redact].contains(workspace.activeTool) {
+            // With a drawing selected, the controls below change that drawing; the defaults
+            // for the next one follow along, so they are not shown twice.
+            if workspace.selectedAnnotationIsDrawing, workspace.activeTool.drawsAnnotations {
+                selectedDrawingControls
+            }
+            if ![.select, .fillForms, .editText, .redact].contains(workspace.activeTool),
+               !(workspace.selectedAnnotationIsDrawing && workspace.activeTool.drawsAnnotations) {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
@@ -394,8 +400,7 @@ struct InspectorPanel: View {
                     Slider(value: $preferences.highlightOpacity, in: 0.1...1)
                 }
             }
-            if [.draw, .signature, .line, .arrow, .polygon].contains(workspace.activeTool) ||
-                ([.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape) {
+            if workspace.activeTool.drawsAnnotations, !workspace.selectedAnnotationIsDrawing {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Stroke Width").font(.callout)
@@ -406,7 +411,7 @@ struct InspectorPanel: View {
                     Slider(value: $workspace.lineWidth, in: 0.5...12)
                 }
             }
-            if [.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsShape {
+            if [.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsDrawing {
                 Toggle("Fill", isOn: $workspace.shapeHasFill)
                 if workspace.shapeHasFill {
                     HStack {
@@ -416,9 +421,6 @@ struct InspectorPanel: View {
                             .labelsHidden()
                     }
                 }
-            }
-            if [.rectangle, .oval].contains(workspace.activeTool) && workspace.selectedAnnotationIsShape {
-                selectedShapeControls
             }
             if workspace.activeTool == .signature {
                 HStack {
@@ -485,8 +487,8 @@ struct InspectorPanel: View {
                     selectedTextSizeControls
                     replacedTextControls
                 }
-                if workspace.selectedAnnotationIsShape {
-                    selectedShapeControls
+                if workspace.selectedAnnotationIsDrawing {
+                    selectedDrawingControls
                 }
             }
             HStack(spacing: 8) {
@@ -660,8 +662,23 @@ struct InspectorPanel: View {
         }
     }
 
-    private var selectedShapeControls: some View {
+    /// What can be changed about a drawing after it is placed: its outline, and the fill of
+    /// a rectangle or oval.
+    private var selectedDrawingControls: some View {
         VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text(workspace.selectedAnnotationIsShape ? "Border Color" : "Color").font(.callout)
+                Spacer()
+                ColorPicker(
+                    "",
+                    selection: Binding(
+                        get: { workspace.selectedDrawingStrokeColor },
+                        set: { workspace.setSelectedDrawingStrokeColor($0) }
+                    ),
+                    supportsOpacity: true
+                )
+                .labelsHidden()
+            }
             HStack {
                 Text("Stroke Width").font(.callout)
                 Spacer()
@@ -679,14 +696,16 @@ struct InspectorPanel: View {
                     else { workspace.endSelectedShapeStrokeChange() }
                 }
             )
-            Toggle(
-                "Fill",
-                isOn: Binding(
-                    get: { workspace.selectedShapeHasFill },
-                    set: { workspace.setSelectedShapeFillEnabled($0) }
+            if workspace.selectedAnnotationIsShape {
+                Toggle(
+                    "Fill",
+                    isOn: Binding(
+                        get: { workspace.selectedShapeHasFill },
+                        set: { workspace.setSelectedShapeFillEnabled($0) }
+                    )
                 )
-            )
-            if workspace.selectedShapeHasFill {
+            }
+            if workspace.selectedAnnotationIsShape, workspace.selectedShapeHasFill {
                 HStack {
                     Text("Fill Color").font(.callout)
                     Spacer()

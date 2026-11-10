@@ -3,10 +3,11 @@ import PDFKit
 
 final class ScalableInkAnnotation: PDFAnnotation {
     private var normalizedStrokes: [[CGPoint]]
-    private let inkLineWidth: CGFloat
+    /// The stroke's width, which can be changed after the drawing is placed.
+    var strokeWidth: CGFloat
 
     init(bounds: CGRect, pageStrokes: [[CGPoint]], color: NSColor, lineWidth: CGFloat) {
-        self.inkLineWidth = lineWidth
+        self.strokeWidth = lineWidth
         self.normalizedStrokes = pageStrokes.map { stroke in
             stroke.map {
                 CGPoint(
@@ -25,7 +26,7 @@ final class ScalableInkAnnotation: PDFAnnotation {
 
     required init?(coder: NSCoder) {
         normalizedStrokes = []
-        inkLineWidth = 2
+        strokeWidth = 2
         super.init(coder: coder)
     }
 
@@ -53,7 +54,7 @@ final class ScalableInkAnnotation: PDFAnnotation {
         }
         context.saveGState()
         context.setStrokeColor(color.cgColor)
-        context.setLineWidth(inkLineWidth)
+        context.setLineWidth(strokeWidth)
         context.setLineCap(.round)
         context.setLineJoin(.round)
         for stroke in normalizedStrokes where stroke.count > 1 {

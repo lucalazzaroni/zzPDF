@@ -95,7 +95,13 @@ struct PDFCanvas: NSViewRepresentable {
 }
 
 final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
-    private enum AnnotationDragMode: Equatable { case move, topLeft, topRight, bottomLeft, bottomRight }
+    private enum AnnotationDragMode: Equatable {
+        case move
+        case topLeft, topRight, bottomLeft, bottomRight
+        case top, bottom, left, right
+        /// A line or arrow is reshaped by its ends, not by a box around it.
+        case lineStart, lineEnd
+    }
 
     weak var workspace: PDFWorkspace?
     private var gesturePoints: [CGPoint] = []
@@ -106,6 +112,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     private weak var draggedAnnotation: PDFAnnotation?
     private weak var draggedAnnotationPage: PDFPage?
     private var annotationDragMode: AnnotationDragMode?
+    private var annotationOriginalLine: (start: CGPoint, end: CGPoint)?
     private var annotationDragStart = CGPoint.zero
     private var annotationOriginalViewBounds = CGRect.zero
     private var annotationOriginalPageBounds = CGRect.zero
@@ -292,6 +299,19 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     fileprivate func cursor(at point: CGPoint) -> NSCursor {
         guard page(for: point, nearest: false) != nil else { return .arrow }
         if NSEvent.modifierFlags.contains(.command), link(at: point) != nil { return .pointingHand }
+        guard let workspace else { return cursorForActiveTool }
+        if let selected = workspace.selectedAnnotation, let page = selected.page {
+            if let mode = resizeHandle(at: point, for: selected, on: page) { return Self.cursor(for: mode) }
+            if workspace.activeTool == .select || workspace.activeTool.drawsAnnotations,
+               bodyContains(point, selected, on: page) {
+                return .openHand
+            }
+        }
+        // With Select in hand, anything that can be picked up says so.
+        if workspace.activeTool == .select, let page = page(for: point, nearest: false),
+           let hit = page.annotation(at: convert(point, to: page)), canReshape(hit) {
+            return .openHand
+        }
         return cursorForActiveTool
     }
 
@@ -499,6 +519,16 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             return
         }
 
+        // The drawing just made stays in reach with the tool still in hand: grabbing it
+        // moves it, where before the click started another drawing on top of it and moving
+        // or reshaping meant going back to Select first.
+        if workspace.activeTool.drawsAnnotations, polygonPoints.isEmpty,
+           let selected = workspace.selectedAnnotation, let page = selected.page,
+           bodyContains(viewPoint, selected, on: page) {
+            beginAnnotationDrag(selected, on: page, at: viewPoint, mode: .move)
+            return
+        }
+
         if workspace.activeTool == .fillForms {
             workspace.selectAnnotation(nil)
             super.mouseDown(with: event)
@@ -656,7 +686,16 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     }
 
     private func finishAnnotationDrag(workspace: PDFWorkspace) {
-        if annotationDidChange, let annotation = draggedAnnotation {
+        if annotationDidChange, let annotation = draggedAnnotation,
+           annotationDragMode == .lineStart || annotationDragMode == .lineEnd,
+           let original = annotationOriginalLine {
+            workspace.registerLineChange(
+                annotation,
+                from: original,
+                to: workspace.lineEndpoints(of: annotation),
+                wasDirtyBefore: annotationWasDirty
+            )
+        } else if annotationDidChange, let annotation = draggedAnnotation {
             workspace.registerAnnotationGeometryChange(
                 annotation,
                 from: annotationOriginalPageBounds,
@@ -669,9 +708,13 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         draggedAnnotation = nil
         draggedAnnotationPage = nil
         annotationDragMode = nil
+        annotationOriginalLine = nil
         annotationDidChange = false
         annotationOriginalPaths.removeAll()
         interactionOverlay.needsDisplay = true
+        if let window {
+            cursor(at: convert(window.mouseLocationOutsideOfEventStream, from: nil)).set()
+        }
     }
 
     private func widget(at point: CGPoint, on page: PDFPage) -> PDFAnnotation? {
@@ -708,6 +751,8 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     ) {
         let rect = convert(annotation.bounds, from: page).standardized
         annotationDragMode = preferredMode ?? resizeHandle(at: point, for: annotation, on: page) ?? .move
+        annotationOriginalLine = annotation.isSubtype(.line) ? workspace?.lineEndpoints(of: annotation) : nil
+        Self.cursor(for: annotationDragMode ?? .move).set()
         draggedAnnotation = annotation
         draggedAnnotationPage = page
         annotationDragStart = point
@@ -718,16 +763,100 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         annotationDidChange = false
     }
 
+    /// Whether an annotation can be moved and reshaped by hand. A note is an icon of a set
+    /// size, and form fields and links belong to the document.
+    private func canReshape(_ annotation: PDFAnnotation) -> Bool {
+        !annotation.isSubtype(.widget) && !annotation.isSubtype(.link)
+            && !annotation.isSubtype(.text) && !annotation.isSubtype(.popup)
+    }
+
+    /// The rectangle a selected annotation is outlined with, in view coordinates.
+    private func handleRect(for annotation: PDFAnnotation, on page: PDFPage) -> CGRect {
+        convert(annotation.bounds, from: page).standardized.insetBy(dx: -3, dy: -3)
+    }
+
+    /// A line's two ends, in view coordinates.
+    private func lineEnds(of annotation: PDFAnnotation, on page: PDFPage) -> (start: CGPoint, end: CGPoint)? {
+        guard let workspace else { return nil }
+        let ends = workspace.lineEndpoints(of: annotation)
+        return (convert(ends.start, from: page), convert(ends.end, from: page))
+    }
+
+    /// Which part of the selected annotation is under the pointer: a corner, an edge, or
+    /// one end of a line. Corners and edges both reshape, so the whole outline is a handle
+    /// and not just four dots on it.
     private func resizeHandle(at point: CGPoint, for annotation: PDFAnnotation, on page: PDFPage) -> AnnotationDragMode? {
-        let rect = convert(annotation.bounds, from: page).standardized.insetBy(dx: -3, dy: -3)
-        let threshold: CGFloat = 12
+        guard canReshape(annotation) else { return nil }
+        if annotation.isSubtype(.line) {
+            guard let ends = lineEnds(of: annotation, on: page) else { return nil }
+            if hypot(ends.start.x - point.x, ends.start.y - point.y) <= 10 { return .lineStart }
+            if hypot(ends.end.x - point.x, ends.end.y - point.y) <= 10 { return .lineEnd }
+            return nil
+        }
+        let rect = handleRect(for: annotation, on: page)
         let corners: [(AnnotationDragMode, CGPoint)] = [
             (.topLeft, CGPoint(x: rect.minX, y: rect.maxY)),
             (.topRight, CGPoint(x: rect.maxX, y: rect.maxY)),
             (.bottomLeft, CGPoint(x: rect.minX, y: rect.minY)),
             (.bottomRight, CGPoint(x: rect.maxX, y: rect.minY))
         ]
-        return corners.first { hypot($0.1.x - point.x, $0.1.y - point.y) <= threshold }?.0
+        if let corner = corners.first(where: { hypot($0.1.x - point.x, $0.1.y - point.y) <= 10 }) {
+            return corner.0
+        }
+        let reach: CGFloat = 5
+        let alongX = point.x >= rect.minX && point.x <= rect.maxX
+        let alongY = point.y >= rect.minY && point.y <= rect.maxY
+        if alongY, abs(point.x - rect.minX) <= reach { return .left }
+        if alongY, abs(point.x - rect.maxX) <= reach { return .right }
+        if alongX, abs(point.y - rect.maxY) <= reach { return .top }
+        if alongX, abs(point.y - rect.minY) <= reach { return .bottom }
+        return nil
+    }
+
+    /// Whether `point` is on the annotation itself rather than beside it. A line counts
+    /// along its length, not over the empty box around it.
+    private func bodyContains(_ point: CGPoint, _ annotation: PDFAnnotation, on page: PDFPage) -> Bool {
+        guard canReshape(annotation) else { return false }
+        if annotation.isSubtype(.line) {
+            guard let ends = lineEnds(of: annotation, on: page) else { return false }
+            let width = max(6, (annotation.border?.lineWidth ?? 1) * scaleFactor / 2 + 4)
+            return distance(from: point, toSegment: ends.start, ends.end) <= width
+        }
+        return handleRect(for: annotation, on: page).contains(point)
+    }
+
+    private func distance(from point: CGPoint, toSegment a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = b.x - a.x, dy = b.y - a.y
+        let lengthSquared = dx * dx + dy * dy
+        guard lengthSquared > 0 else { return hypot(point.x - a.x, point.y - a.y) }
+        let t = max(0, min(1, ((point.x - a.x) * dx + (point.y - a.y) * dy) / lengthSquared))
+        return hypot(point.x - (a.x + t * dx), point.y - (a.y + t * dy))
+    }
+
+    /// The pointer for a part of an annotation, so the reader can see what dragging there
+    /// will do before they press.
+    private static func cursor(for mode: AnnotationDragMode) -> NSCursor {
+        if #available(macOS 15.0, *) {
+            switch mode {
+            case .move: return .closedHand
+            case .topLeft: return .frameResize(position: .topLeft, directions: .all)
+            case .topRight: return .frameResize(position: .topRight, directions: .all)
+            case .bottomLeft: return .frameResize(position: .bottomLeft, directions: .all)
+            case .bottomRight: return .frameResize(position: .bottomRight, directions: .all)
+            case .top: return .frameResize(position: .top, directions: .all)
+            case .bottom: return .frameResize(position: .bottom, directions: .all)
+            case .left: return .frameResize(position: .left, directions: .all)
+            case .right: return .frameResize(position: .right, directions: .all)
+            case .lineStart, .lineEnd: return .crosshair
+            }
+        }
+        // macOS 14 has no diagonal resize pointers; the crosshair is the nearest it has.
+        switch mode {
+        case .move: return .closedHand
+        case .left, .right: return .resizeLeftRight
+        case .top, .bottom: return .resizeUpDown
+        case .topLeft, .topRight, .bottomLeft, .bottomRight, .lineStart, .lineEnd: return .crosshair
+        }
     }
 
     private func updateAnnotationDrag(to point: CGPoint, workspace: PDFWorkspace) {
@@ -735,10 +864,35 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
               let mode = annotationDragMode else { return }
         let delta = CGPoint(x: point.x - annotationDragStart.x, y: point.y - annotationDragStart.y)
         guard abs(delta.x) > 0.5 || abs(delta.y) > 0.5 else { return }
+
+        if mode == .lineStart || mode == .lineEnd, let original = annotationOriginalLine {
+            let pointer = convert(point, to: page)
+            let start = mode == .lineStart ? pointer : original.start
+            let end = mode == .lineEnd ? pointer : original.end
+            guard hypot(end.x - start.x, end.y - start.y) > 3 else { return }
+            workspace.setLineEndpoints(annotation, start: start, end: end)
+            annotationsChanged(on: page)
+            needsDisplay = true
+            annotationDidChange = true
+            workspace.changed("Line reshaped")
+            interactionOverlay.needsDisplay = true
+            return
+        }
+
         var rect = annotationOriginalViewBounds
         switch mode {
+        case .lineStart, .lineEnd:
+            return
         case .move:
             rect = rect.offsetBy(dx: delta.x, dy: delta.y)
+        case .top:
+            rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width, height: rect.height + delta.y)
+        case .bottom:
+            rect = CGRect(x: rect.minX, y: rect.minY + delta.y, width: rect.width, height: rect.height - delta.y)
+        case .left:
+            rect = CGRect(x: rect.minX + delta.x, y: rect.minY, width: rect.width - delta.x, height: rect.height)
+        case .right:
+            rect = CGRect(x: rect.minX, y: rect.minY, width: rect.width + delta.x, height: rect.height)
         case .topLeft:
             rect = CGRect(x: rect.minX + delta.x, y: rect.minY,
                           width: rect.width - delta.x, height: rect.height + delta.y)
@@ -775,23 +929,36 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         guard let workspace else { return }
 
         if let annotation = workspace.selectedAnnotation, let page = annotation.page {
-            let rect = convert(annotation.bounds, from: page).standardized.insetBy(dx: -3, dy: -3)
-            let outline = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
-            outline.lineWidth = 2
-            outline.setLineDash([6, 3], count: 2, phase: 0)
-            NSColor.controlAccentColor.setStroke()
-            outline.stroke()
-
-            for point in [
-                CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
-                CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY)
-            ] {
+            func drawHandle(at point: CGPoint) {
                 let handle = NSBezierPath(ovalIn: CGRect(x: point.x - 3.5, y: point.y - 3.5, width: 7, height: 7))
                 NSColor.white.setFill()
                 handle.fill()
                 NSColor.controlAccentColor.setStroke()
                 handle.lineWidth = 1.5
                 handle.stroke()
+            }
+            if annotation.isSubtype(.line), let ends = lineEnds(of: annotation, on: page) {
+                // A line is reshaped by its ends, so those are its handles; the padded box
+                // around it is nothing the reader drew and is left out.
+                drawHandle(at: ends.start)
+                drawHandle(at: ends.end)
+            } else {
+                let rect = handleRect(for: annotation, on: page)
+                let outline = NSBezierPath(roundedRect: rect, xRadius: 3, yRadius: 3)
+                outline.lineWidth = 2
+                outline.setLineDash([6, 3], count: 2, phase: 0)
+                NSColor.controlAccentColor.setStroke()
+                outline.stroke()
+                if canReshape(annotation) {
+                    for point in [
+                        CGPoint(x: rect.minX, y: rect.minY), CGPoint(x: rect.maxX, y: rect.minY),
+                        CGPoint(x: rect.minX, y: rect.maxY), CGPoint(x: rect.maxX, y: rect.maxY),
+                        CGPoint(x: rect.midX, y: rect.minY), CGPoint(x: rect.midX, y: rect.maxY),
+                        CGPoint(x: rect.minX, y: rect.midY), CGPoint(x: rect.maxX, y: rect.midY)
+                    ] {
+                        drawHandle(at: point)
+                    }
+                }
             }
         }
 
