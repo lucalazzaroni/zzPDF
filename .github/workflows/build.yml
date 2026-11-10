@@ -6,7 +6,9 @@ on:
 
 jobs:
   build:
-    runs-on: macos-14
+    # GitHub retired its macOS 14 runners. The app still targets macOS 14; it is built and
+    # tested on the oldest macOS GitHub still runs.
+    runs-on: macos-15
     steps:
       - uses: actions/checkout@v4
       - name: Build release
