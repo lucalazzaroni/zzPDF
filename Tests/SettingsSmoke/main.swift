@@ -25,7 +25,13 @@ struct SettingsSmoke {
         workspace.sidebarVisible = false
         workspace.inspectorVisible = false
         workspace.shapeHasFill = true
+        // Each tool keeps its own colour: choosing one for text leaves the highlighter alone.
+        workspace.activeTool = .text
         workspace.annotationColor = Color(.sRGB, red: 0.2, green: 0.4, blue: 0.6)
+        let chosenTextColor = workspace.annotationColor
+        guard colorsMatch(preferences.color(for: .highlight), HighlightPalette.yellow) else {
+            fatalError("Choosing a colour for text changed the highlighter's.")
+        }
         workspace.shapeFillColor = Color(.sRGB, red: 0.7, green: 0.3, blue: 0.1)
         preferences.initialTool = .fillForms
         preferences.confirmPageDeletion = false
@@ -37,7 +43,8 @@ struct SettingsSmoke {
               !reloaded.sidebarVisible,
               !reloaded.inspectorVisible,
               reloaded.shapeHasFill,
-              colorsMatch(reloaded.annotationColor, workspace.annotationColor),
+              colorsMatch(reloaded.color(for: .text), chosenTextColor),
+              colorsMatch(reloaded.color(for: .highlight), HighlightPalette.yellow),
               colorsMatch(reloaded.shapeFillColor, workspace.shapeFillColor),
               reloaded.initialTool == .fillForms,
               !reloaded.confirmPageDeletion,
@@ -52,7 +59,8 @@ struct SettingsSmoke {
               reloaded.initialTool == .select,
               abs(reloaded.lineWidth - 2.5) < 0.01,
               abs(reloaded.textFontSize - 15) < 0.01,
-              reloaded.exportFolderPath.isEmpty else {
+              reloaded.exportFolderPath.isEmpty,
+              colorsMatch(reloaded.color(for: .text), .black) else {
             fatalError("Settings were not restored to their defaults.")
         }
 

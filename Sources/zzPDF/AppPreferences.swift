@@ -10,7 +10,7 @@ final class AppPreferences: ObservableObject {
         static let initialTool = "initialTool"
         static let sidebarVisible = "sidebarVisible"
         static let inspectorVisible = "inspectorVisible"
-        static let annotationColor = "annotationColor"
+        static let toolColors = "toolColors"
         static let lineWidth = "lineWidth"
         static let textFontSize = "textFontSize"
         static let shapeHasFill = "shapeHasFill"
@@ -37,7 +37,8 @@ final class AppPreferences: ObservableObject {
     @Published var initialTool: CanvasTool { didSet { defaults.set(initialTool.rawValue, forKey: Key.initialTool) } }
     @Published var sidebarVisible: Bool { didSet { defaults.set(sidebarVisible, forKey: Key.sidebarVisible) } }
     @Published var inspectorVisible: Bool { didSet { defaults.set(inspectorVisible, forKey: Key.inspectorVisible) } }
-    @Published var annotationColor: Color { didSet { saveColor(annotationColor, key: Key.annotationColor) } }
+    /// Each tool's own colour, kept by the tool's name. A tool not in here uses its default.
+    @Published private(set) var toolColors: [String: Color] { didSet { saveToolColors() } }
     @Published var lineWidth: Double { didSet { defaults.set(lineWidth, forKey: Key.lineWidth) } }
     @Published var textFontSize: Double { didSet { defaults.set(textFontSize, forKey: Key.textFontSize) } }
     @Published var shapeHasFill: Bool { didSet { defaults.set(shapeHasFill, forKey: Key.shapeHasFill) } }
@@ -79,7 +80,7 @@ final class AppPreferences: ObservableObject {
         initialTool = [.select, .fillForms].contains(storedTool) ? storedTool : .select
         sidebarVisible = defaults.bool(forKey: Key.sidebarVisible)
         inspectorVisible = defaults.bool(forKey: Key.inspectorVisible)
-        annotationColor = Self.loadColor(defaults: defaults, key: Key.annotationColor) ?? .black
+        toolColors = Self.loadToolColors(defaults: defaults)
         lineWidth = max(0.5, min(defaults.double(forKey: Key.lineWidth), 12))
         textFontSize = max(8, min(defaults.double(forKey: Key.textFontSize), 72))
         shapeHasFill = defaults.bool(forKey: Key.shapeHasFill)
@@ -232,7 +233,7 @@ final class AppPreferences: ObservableObject {
         initialTool = .select
         sidebarVisible = true
         inspectorVisible = true
-        annotationColor = .black
+        toolColors = [:]
         lineWidth = 2.5
         textFontSize = 15
         shapeHasFill = false
@@ -248,6 +249,57 @@ final class AppPreferences: ObservableObject {
         signatureImageData = nil
         clearRecentDocuments()
         forgetAllDocuments()
+    }
+
+    // MARK: - Colours, one per tool
+
+    /// What each tool draws in when the reader has not chosen otherwise.
+    ///
+    /// One colour used to be shared by every tool, so choosing black for text made the next
+    /// highlight black too — which blotted out what it was meant to mark. Each tool now
+    /// keeps its own, and changing one leaves the others alone.
+    static let defaultToolColors: [CanvasTool: Color] = [
+        .highlight: HighlightPalette.yellow,
+        .underline: Color(.sRGB, red: 0.13, green: 0.45, blue: 0.95),
+        .strikeOut: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .text: .black,
+        .draw: Color(.sRGB, red: 0.13, green: 0.45, blue: 0.95),
+        .line: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .arrow: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .polygon: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .rectangle: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .oval: Color(.sRGB, red: 0.86, green: 0.16, blue: 0.16),
+        .signature: .black
+    ]
+
+    func color(for tool: CanvasTool) -> Color {
+        toolColors[tool.rawValue] ?? Self.defaultToolColors[tool] ?? .black
+    }
+
+    func setColor(_ color: Color, for tool: CanvasTool) {
+        toolColors[tool.rawValue] = color
+    }
+
+    func resetToolColors() {
+        toolColors = [:]
+    }
+
+    private func saveToolColors() {
+        var stored: [String: [Double]] = [:]
+        for (tool, color) in toolColors {
+            guard let rgb = NSColor(color).usingColorSpace(.deviceRGB) else { continue }
+            stored[tool] = [rgb.redComponent, rgb.greenComponent, rgb.blueComponent, rgb.alphaComponent]
+        }
+        defaults.set(stored, forKey: Key.toolColors)
+    }
+
+    private static func loadToolColors(defaults: UserDefaults) -> [String: Color] {
+        guard let stored = defaults.dictionary(forKey: Key.toolColors) as? [String: [Double]] else { return [:] }
+        return stored.reduce(into: [:]) { colors, entry in
+            let c = entry.value
+            guard c.count == 4 else { return }
+            colors[entry.key] = Color(.sRGB, red: c[0], green: c[1], blue: c[2], opacity: c[3])
+        }
     }
 
     private func saveColor(_ color: Color, key: String) {
@@ -306,5 +358,39 @@ enum ReadingMode: String, CaseIterable, Identifiable {
         case .night: NSColor(calibratedWhite: 0.87, alpha: 1)
         case .sepia: NSColor(calibratedWhite: 0.30, alpha: 1)
         }
+    }
+}
+
+
+/// The colours a highlight can be. A highlighter is a highlighter: a few clear, light
+/// colours that leave the text under them readable, not the whole of the colour wheel —
+/// which is how a highlight came out black.
+enum HighlightPalette {
+    static let yellow = Color(.sRGB, red: 1.0, green: 0.84, blue: 0.04)
+    static let green = Color(.sRGB, red: 0.40, green: 0.85, blue: 0.35)
+    static let blue = Color(.sRGB, red: 0.35, green: 0.70, blue: 1.0)
+    static let pink = Color(.sRGB, red: 1.0, green: 0.45, blue: 0.70)
+    static let orange = Color(.sRGB, red: 1.0, green: 0.62, blue: 0.20)
+    static let purple = Color(.sRGB, red: 0.72, green: 0.50, blue: 1.0)
+
+    static let all: [(name: String, color: Color)] = [
+        ("Yellow", yellow), ("Green", green), ("Blue", blue),
+        ("Pink", pink), ("Orange", orange), ("Purple", purple)
+    ]
+
+    /// The palette colour nearest to `color`, for showing which one an existing highlight
+    /// is — including one made before the palette, in any colour at all.
+    static func nearest(to color: NSColor) -> Color {
+        guard let target = color.usingColorSpace(.sRGB) else { return yellow }
+        return all.min { a, b in
+            distance(NSColor(a.color), target) < distance(NSColor(b.color), target)
+        }?.color ?? yellow
+    }
+
+    private static func distance(_ a: NSColor, _ b: NSColor) -> CGFloat {
+        guard let a = a.usingColorSpace(.sRGB) else { return .greatestFiniteMagnitude }
+        let dr = a.redComponent - b.redComponent, dg = a.greenComponent - b.greenComponent
+        let db = a.blueComponent - b.blueComponent
+        return dr * dr + dg * dg + db * db
     }
 }

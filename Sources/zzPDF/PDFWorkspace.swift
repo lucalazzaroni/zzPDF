@@ -67,7 +67,18 @@ enum CanvasTool: String, CaseIterable, Identifiable {
     }
 }
 
-enum MarkupKind { case highlight, underline, strikeOut }
+enum MarkupKind {
+    case highlight, underline, strikeOut
+
+    /// The tool whose colour this kind of markup is made in.
+    var tool: CanvasTool {
+        switch self {
+        case .highlight: .highlight
+        case .underline: .underline
+        case .strikeOut: .strikeOut
+        }
+    }
+}
 
 enum PageLayoutMode: String, CaseIterable, Identifiable {
     case single, continuous, facing, facingContinuous
@@ -156,7 +167,15 @@ final class PDFWorkspace: ObservableObject {
     @Published var hasTextSelection = false
     @Published var activeTool: CanvasTool = .select
     @Published var pageLayout: PageLayoutMode = .continuous
-    @Published var annotationColor: Color = .black { didSet { preferences.annotationColor = annotationColor } }
+    /// The colour the tool in hand draws in. Each tool keeps its own, so choosing a colour
+    /// for one leaves every other tool's alone.
+    var annotationColor: Color {
+        get { preferences.color(for: activeTool) }
+        set {
+            objectWillChange.send()
+            preferences.setColor(newValue, for: activeTool)
+        }
+    }
     @Published var lineWidth: Double = 2.5 { didSet { preferences.lineWidth = lineWidth } }
     @Published var shapeHasFill = false { didSet { preferences.shapeHasFill = shapeHasFill } }
     @Published var shapeFillColor: Color = .black { didSet { preferences.shapeFillColor = shapeFillColor } }
@@ -166,6 +185,9 @@ final class PDFWorkspace: ObservableObject {
     /// The outline of the selected drawing: a rectangle's or oval's border, a line, a
     /// freehand stroke.
     @Published var selectedDrawingStrokeColor: Color = .black
+    /// The selected highlight's, underline's or strike-through's colour, without its
+    /// transparency.
+    @Published var selectedMarkupColor: Color = HighlightPalette.yellow
     @Published var textToInsert = "Text"
     @Published var textFontSize: Double = 15 { didSet { preferences.textFontSize = textFontSize } }
     @Published var selectedTextFontSize: Double = 15
@@ -309,7 +331,6 @@ final class PDFWorkspace: ObservableObject {
         activeTool = preferences.initialTool
         sidebarVisible = preferences.sidebarVisible
         inspectorVisible = preferences.inspectorVisible
-        annotationColor = preferences.annotationColor
         lineWidth = preferences.lineWidth
         textFontSize = preferences.textFontSize
         shapeHasFill = preferences.shapeHasFill
@@ -1190,9 +1211,12 @@ final class PDFWorkspace: ObservableObject {
             case .strikeOut: subtype = .strikeOut
             }
             let annotation = PDFAnnotation(bounds: bounds, forType: subtype, withProperties: nil)
+            // Its own tool's colour, not the one in hand: markup is also made from Select,
+            // whose colour is nobody's.
+            let base = NSColor(preferences.color(for: kind.tool))
             annotation.color = kind == .highlight
-                ? nsAnnotationColor.highlightTint(alpha: preferences.highlightOpacity)
-                : nsAnnotationColor
+                ? base.highlightTint(alpha: preferences.highlightOpacity)
+                : base
             sign(annotation)
             page.addAnnotation(annotation)
             additions.append((page, annotation))
@@ -1479,6 +1503,12 @@ final class PDFWorkspace: ObservableObject {
     }
 
     private func synchronizeSelectedShapeAppearance() {
+        if selectedAnnotationIsMarkup, let annotation = selectedAnnotation {
+            let opaque = annotation.color.withAlphaComponent(1)
+            selectedMarkupColor = annotation.isSubtype(.highlight)
+                ? HighlightPalette.nearest(to: opaque)
+                : Color(nsColor: opaque)
+        }
         guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
         selectedDrawingStrokeColor = Color(nsColor: annotation.color)
         selectedShapeStrokeWidth = Double(strokeWidth(of: annotation))
@@ -1607,14 +1637,54 @@ final class PDFWorkspace: ObservableObject {
     /// Recolours the outline of the selected drawing, and makes that the colour of the next.
     func setSelectedDrawingStrokeColor(_ color: Color) {
         selectedDrawingStrokeColor = color
-        annotationColor = color
         guard selectedAnnotationIsDrawing, let annotation = selectedAnnotation else { return }
+        if let tool = defaultTool(for: annotation) { preferences.setColor(color, for: tool) }
         let old = annotation.color
         let new = NSColor(color)
         guard old != new else { return }
         annotation.color = new
         registerColourChange(on: annotation, kind: "stroke", from: old, to: new) { annotation.color = $0 ?? .black }
         changed("Outline color updated")
+    }
+
+    /// The tool that makes annotations like this one, whose colour it should teach.
+    func defaultTool(for annotation: PDFAnnotation) -> CanvasTool? {
+        if annotation.contents == RedactionFlattener.marker { return nil }
+        if annotation.isSubtype(.square) { return .rectangle }
+        if annotation.isSubtype(.circle) { return .oval }
+        if annotation.isSubtype(.line) { return annotation.endLineStyle == .none ? .line : .arrow }
+        if annotation.isSubtype(.ink) { return .draw }
+        if annotation.isSubtype(.highlight) { return .highlight }
+        if annotation.isSubtype(.underline) { return .underline }
+        if annotation.isSubtype(.strikeOut) { return .strikeOut }
+        if annotation.isSubtype(.freeText) { return .text }
+        return nil
+    }
+
+    /// Highlights, underlines and strike-throughs: marks laid over the page's own text.
+    var selectedAnnotationIsMarkup: Bool {
+        guard let annotation = selectedAnnotation else { return false }
+        return annotation.isSubtype(.highlight) || annotation.isSubtype(.underline)
+            || annotation.isSubtype(.strikeOut)
+    }
+
+    var selectedAnnotationIsHighlight: Bool { selectedAnnotation?.isSubtype(.highlight) == true }
+
+    /// Recolours the selected highlight, underline or strike-through, and makes that the
+    /// colour of the next one. A highlight keeps how strong it was.
+    func setSelectedMarkupColor(_ color: Color) {
+        selectedMarkupColor = color
+        guard selectedAnnotationIsMarkup, let annotation = selectedAnnotation else { return }
+        if let tool = defaultTool(for: annotation) { preferences.setColor(color, for: tool) }
+        let old = annotation.color
+        let alpha = annotation.isSubtype(.highlight)
+            ? (old.usingColorSpace(.sRGB)?.alphaComponent ?? CGFloat(preferences.highlightOpacity))
+            : 1
+        let new = NSColor(color).withAlphaComponent(alpha)
+        guard old != new else { return }
+        annotation.color = new
+        registerColourChange(on: annotation, kind: "markup", from: old, to: new) { annotation.color = $0 ?? old }
+        changed(annotation.isSubtype(.highlight) ? "Highlight color updated" : "Mark color updated")
     }
 
     /// One undo step for a change of colour, however many steps the picker reported.
@@ -2382,14 +2452,13 @@ final class PDFWorkspace: ObservableObject {
         let newColor = NSColor(color)
         let oldColor = annotation.fontColor ?? .black
         selectedTextColor = color
+        // Replaced page text matches the page, so it does not set the colour of new text.
+        if !TextEditMarker.isTextEdit(annotation) { preferences.setColor(color, for: .text) }
         guard oldColor != newColor else { return }
-        let wasDirty = isDirty
         annotation.fontColor = newColor
-        registerEdit(
-            wasDirtyBefore: wasDirty,
-            undo: { annotation.fontColor = oldColor },
-            redo: { annotation.fontColor = newColor }
-        )
+        registerColourChange(on: annotation, kind: "text", from: oldColor, to: newColor) {
+            annotation.fontColor = $0 ?? oldColor
+        }
         changed("Text color updated")
     }
 
@@ -2912,7 +2981,6 @@ final class PDFWorkspace: ObservableObject {
     func applyDefaultPreferences() {
         sidebarVisible = preferences.sidebarVisible
         inspectorVisible = preferences.inspectorVisible
-        annotationColor = preferences.annotationColor
         lineWidth = preferences.lineWidth
         textFontSize = preferences.textFontSize
         shapeHasFill = preferences.shapeHasFill

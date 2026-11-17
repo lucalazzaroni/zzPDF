@@ -332,7 +332,11 @@ struct InspectorPanel: View {
                 inspectorHeader
                 Divider()
                 activeToolControls
-                if workspace.activeTool == .select && (workspace.hasTextSelection || workspace.selectedAnnotation != nil) {
+                // Whatever tool is in hand, a selected annotation can be changed here. Before,
+                // this showed only under Select, so with the rectangle or text tool in hand the
+                // colour controls quietly set the next annotation's colour instead.
+                if workspace.activeTool != .editText,
+                   (workspace.activeTool == .select && workspace.hasTextSelection) || workspace.selectedAnnotation != nil {
                     Divider()
                     markupControls
                 }
@@ -366,27 +370,32 @@ struct InspectorPanel: View {
             if workspace.activeTool == .text {
                 TextField("Text to insert", text: $workspace.textToInsert, axis: .vertical)
                     .textFieldStyle(.roundedBorder)
-                if workspace.selectedAnnotationIsFreeText {
-                    selectedTextSizeControls
-                } else {
+                if !workspace.selectedAnnotationIsFreeText {
                     newTextSizeControls
                 }
             }
             if workspace.activeTool == .editText, workspace.selectedAnnotationIsFreeText {
                 replacedTextControls
             }
-            // With a drawing selected, the controls below change that drawing; the defaults
-            // for the next one follow along, so they are not shown twice.
-            if workspace.selectedAnnotationIsDrawing, workspace.activeTool.drawsAnnotations {
-                selectedDrawingControls
-            }
-            if ![.select, .fillForms, .editText, .redact].contains(workspace.activeTool),
-               !(workspace.selectedAnnotationIsDrawing && workspace.activeTool.drawsAnnotations) {
+            // These set how the next annotation comes out. When one this tool made is
+            // selected, the section below changes it instead, and what is chosen there
+            // carries over to the next — so they are not offered twice.
+            if ![.select, .fillForms, .editText, .redact, .highlight].contains(workspace.activeTool),
+               !editingSelectionWithTool {
                 HStack {
                     Text("Color").font(.callout)
                     Spacer()
                     ColorPicker("", selection: $workspace.annotationColor, supportsOpacity: true)
                         .labelsHidden()
+                }
+            }
+            if workspace.activeTool == .highlight {
+                VStack(alignment: .leading, spacing: 6) {
+                    Text("Color").font(.callout)
+                    highlightSwatches(
+                        selected: workspace.annotationColor,
+                        choose: { workspace.annotationColor = $0 }
+                    )
                 }
             }
             if workspace.activeTool == .highlight {
@@ -400,7 +409,7 @@ struct InspectorPanel: View {
                     Slider(value: $preferences.highlightOpacity, in: 0.1...1)
                 }
             }
-            if workspace.activeTool.drawsAnnotations, !workspace.selectedAnnotationIsDrawing {
+            if workspace.activeTool.drawsAnnotations, !editingSelectionWithTool {
                 VStack(alignment: .leading, spacing: 4) {
                     HStack {
                         Text("Stroke Width").font(.callout)
@@ -411,7 +420,7 @@ struct InspectorPanel: View {
                     Slider(value: $workspace.lineWidth, in: 0.5...12)
                 }
             }
-            if [.rectangle, .oval].contains(workspace.activeTool) && !workspace.selectedAnnotationIsDrawing {
+            if [.rectangle, .oval].contains(workspace.activeTool) && !editingSelectionWithTool {
                 Toggle("Fill", isOn: $workspace.shapeHasFill)
                 if workspace.shapeHasFill {
                     HStack {
@@ -489,6 +498,31 @@ struct InspectorPanel: View {
                 }
                 if workspace.selectedAnnotationIsDrawing {
                     selectedDrawingControls
+                }
+                if workspace.selectedAnnotationIsMarkup {
+                    if workspace.selectedAnnotationIsHighlight {
+                        VStack(alignment: .leading, spacing: 6) {
+                            Text("Highlight Color").font(.callout)
+                            highlightSwatches(
+                                selected: workspace.selectedMarkupColor,
+                                choose: { workspace.setSelectedMarkupColor($0) }
+                            )
+                        }
+                    } else {
+                        HStack {
+                            Text("Color").font(.callout)
+                            Spacer()
+                            ColorPicker(
+                                "",
+                                selection: Binding(
+                                    get: { workspace.selectedMarkupColor },
+                                    set: { workspace.setSelectedMarkupColor($0) }
+                                ),
+                                supportsOpacity: false
+                            )
+                            .labelsHidden()
+                        }
+                    }
                 }
             }
             HStack(spacing: 8) {
@@ -660,6 +694,43 @@ struct InspectorPanel: View {
                 .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
         }
+    }
+
+    /// Whether the selected annotation is one the tool in hand makes, so that the selection
+    /// section is where its look is changed.
+    private var editingSelectionWithTool: Bool {
+        (workspace.activeTool.drawsAnnotations && workspace.selectedAnnotationIsDrawing)
+            || (workspace.activeTool == .text && workspace.selectedAnnotationIsFreeText)
+    }
+
+    /// The highlighter's few colours, as swatches to pick from.
+    private func highlightSwatches(selected: Color, choose: @escaping (Color) -> Void) -> some View {
+        HStack(spacing: 8) {
+            ForEach(HighlightPalette.all, id: \.name) { swatch in
+                let isSelected = Self.sameColor(swatch.color, selected)
+                Button { choose(swatch.color) } label: {
+                    Circle()
+                        .fill(swatch.color)
+                        .frame(width: 20, height: 20)
+                        .overlay(
+                            Circle().stroke(
+                                isSelected ? Color.primary : Color.primary.opacity(0.18),
+                                lineWidth: isSelected ? 2 : 1
+                            )
+                        )
+                        .padding(2)
+                }
+                .buttonStyle(.plain)
+                .help(swatch.name)
+                .accessibilityLabel(swatch.name)
+            }
+        }
+    }
+
+    private static func sameColor(_ a: Color, _ b: Color) -> Bool {
+        guard let a = NSColor(a).usingColorSpace(.sRGB), let b = NSColor(b).usingColorSpace(.sRGB) else { return false }
+        return abs(a.redComponent - b.redComponent) < 0.02 && abs(a.greenComponent - b.greenComponent) < 0.02
+            && abs(a.blueComponent - b.blueComponent) < 0.02
     }
 
     /// What can be changed about a drawing after it is placed: its outline, and the fill of

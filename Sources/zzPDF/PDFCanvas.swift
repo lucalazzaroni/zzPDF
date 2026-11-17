@@ -383,7 +383,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         }
         // With Select in hand, anything that can be picked up says so.
         if workspace.activeTool == .select, let page = page(for: point, nearest: false),
-           let hit = page.annotation(at: convert(point, to: page)), canReshape(hit) {
+           let hit = page.annotation(at: convert(point, to: page)), canMove(hit) {
             return .openHand
         }
         return cursorForActiveTool
@@ -652,7 +652,10 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
                             workspace.beginEditingFreeText(annotation)
                         }
                     }
-                    beginAnnotationDrag(annotation, on: page, at: viewPoint, mode: nil)
+                    if canMove(annotation) {
+                        beginAnnotationDrag(annotation, on: page, at: viewPoint, mode: nil)
+                    }
+                    interactionOverlay.needsDisplay = true
                     return
                 }
             }
@@ -837,11 +840,18 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         annotationDidChange = false
     }
 
-    /// Whether an annotation can be moved and reshaped by hand. A note is an icon of a set
-    /// size, and form fields and links belong to the document.
+    /// Whether an annotation can be picked up and moved. Form fields and links belong to the
+    /// document; a highlight, underline or strike-through belongs to the text under it, and
+    /// moved off that text it marks nothing.
+    private func canMove(_ annotation: PDFAnnotation) -> Bool {
+        !annotation.isSubtype(.widget) && !annotation.isSubtype(.link) && !annotation.isSubtype(.popup)
+            && !annotation.isSubtype(.highlight) && !annotation.isSubtype(.underline)
+            && !annotation.isSubtype(.strikeOut)
+    }
+
+    /// Whether it can also be resized. A note is an icon of a set size.
     private func canReshape(_ annotation: PDFAnnotation) -> Bool {
-        !annotation.isSubtype(.widget) && !annotation.isSubtype(.link)
-            && !annotation.isSubtype(.text) && !annotation.isSubtype(.popup)
+        canMove(annotation) && !annotation.isSubtype(.text)
     }
 
     /// The rectangle a selected annotation is outlined with, in view coordinates.
@@ -890,7 +900,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
     /// Whether `point` is on the annotation itself rather than beside it. A line counts
     /// along its length, not over the empty box around it.
     private func bodyContains(_ point: CGPoint, _ annotation: PDFAnnotation, on page: PDFPage) -> Bool {
-        guard canReshape(annotation) else { return false }
+        guard canMove(annotation) else { return false }
         if annotation.isSubtype(.line) {
             guard let ends = lineEnds(of: annotation, on: page) else { return false }
             let width = max(6, (annotation.border?.lineWidth ?? 1) * scaleFactor / 2 + 4)

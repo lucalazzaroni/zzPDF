@@ -58,12 +58,11 @@ struct SettingsView: View {
     private var editingSettings: some View {
         Form {
             Section("Annotations") {
-                HStack {
-                    Text("Default color")
-                    Spacer()
-                    ColorPicker("", selection: $preferences.annotationColor, supportsOpacity: true)
-                        .labelsHidden()
-                        .onChange(of: preferences.annotationColor) { _, _ in applyPreferences() }
+                // Each tool keeps its own colour, chosen in the inspector while the tool is in
+                // hand, so there is no single default colour any more — only a way back to the
+                // ones each tool starts with.
+                LabeledContent("Tool colors") {
+                    Button("Reset to Defaults") { preferences.resetToolColors() }
                 }
                 LabeledContent("Default stroke width") {
                     HStack {
