@@ -175,6 +175,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         addSubview(interactionOverlay, positioned: .above, relativeTo: nil)
         pageOverlayViewProvider = self
         isInMarkupMode = true
+        observeRenderingChanges()
     }
 
     required init?(coder: NSCoder) {
@@ -182,6 +183,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         addSubview(interactionOverlay, positioned: .above, relativeTo: nil)
         pageOverlayViewProvider = self
         isInMarkupMode = true
+        observeRenderingChanges()
     }
 
     override func layout() {
@@ -189,6 +191,78 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         interactionOverlay.frame = bounds
         interactionOverlay.needsDisplay = true
         for overlay in pageOverlays.values { overlay.refresh() }
+        scheduleAnnotationSharpening()
+    }
+
+    // MARK: - Keeping annotations sharp
+
+    /// PDFKit draws the page into tiles at the resolution the zoom calls for, but every
+    /// annotation — a shape, a signature, a highlight, text added on top — into a layer of
+    /// its own at a fixed resolution that ignores the zoom. Zoomed in, that layer is
+    /// stretched, and the annotation looks soft and grainy beside the crisp page under it
+    /// until it is flattened into the page. This keeps those layers at the resolution the
+    /// zoom actually needs.
+    ///
+    /// The layers are PDFKit's own and only recognisable by their class name. If a later
+    /// release renames them this finds nothing and changes nothing.
+    func sharpenAnnotationLayers() {
+        guard let root = layer else { return }
+        let backing = window?.backingScaleFactor ?? NSScreen.main?.backingScaleFactor ?? 2
+        let wanted = backing * max(scaleFactor, 1)
+        func visit(_ layer: CALayer) {
+            if String(describing: type(of: layer)).contains("AnnotationEffect") {
+                // A cap on the pixels, so a page-sized annotation at a high zoom does not ask
+                // for a bitmap the size of a poster.
+                let area = max(1, layer.bounds.width * layer.bounds.height)
+                let affordable = (24_000_000 / area).squareRoot()
+                let scale = min(wanted, max(backing, affordable), 8)
+                if abs(layer.contentsScale - scale) > 0.01 {
+                    layer.contentsScale = scale
+                    layer.setNeedsDisplay()
+                }
+            }
+            for sublayer in layer.sublayers ?? [] { visit(sublayer) }
+        }
+        visit(root)
+    }
+
+    private var sharpeningScheduled = false
+
+    /// Sharpens soon, and once more a moment later: PDFKit builds an annotation's layer on
+    /// its own schedule after a change, so the first pass can come too early to see it.
+    func scheduleAnnotationSharpening() {
+        guard !sharpeningScheduled else { return }
+        sharpeningScheduled = true
+        DispatchQueue.main.async { [weak self] in
+            self?.sharpeningScheduled = false
+            self?.sharpenAnnotationLayers()
+        }
+        DispatchQueue.main.asyncAfter(deadline: .now() + 0.3) { [weak self] in
+            self?.sharpenAnnotationLayers()
+        }
+    }
+
+    private func observeRenderingChanges() {
+        for name in [Notification.Name.PDFViewScaleChanged, .PDFViewVisiblePagesChanged,
+                     .PDFViewPageChanged, .PDFViewDocumentChanged] {
+            NotificationCenter.default.addObserver(
+                self, selector: #selector(renderingChanged(_:)), name: name, object: self
+            )
+        }
+    }
+
+    @objc private func renderingChanged(_ notification: Notification) {
+        scheduleAnnotationSharpening()
+    }
+
+    override func viewDidChangeBackingProperties() {
+        super.viewDidChangeBackingProperties()
+        scheduleAnnotationSharpening()
+    }
+
+    override func annotationsChanged(on page: PDFPage) {
+        super.annotationsChanged(on: page)
+        scheduleAnnotationSharpening()
     }
 
     override func updateTrackingAreas() {

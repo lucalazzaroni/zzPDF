@@ -3174,6 +3174,7 @@ final class PDFWorkspace: ObservableObject {
         synchronizeSelectedTextAppearance()
         pdfView?.needsDisplay = true
         pdfView?.refreshInteractionAppearance()
+        pdfView?.scheduleAnnotationSharpening()
         objectWillChange.send()
     }
 
@@ -3181,6 +3182,7 @@ final class PDFWorkspace: ObservableObject {
         isDirty = true
         statusMessage = message
         pdfView?.needsDisplay = true
+        pdfView?.scheduleAnnotationSharpening()
         objectWillChange.send()
     }
 
