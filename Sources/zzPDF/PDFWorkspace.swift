@@ -188,6 +188,8 @@ final class PDFWorkspace: ObservableObject {
     /// The selected highlight's, underline's or strike-through's colour, without its
     /// transparency.
     @Published var selectedMarkupColor: Color = HighlightPalette.yellow
+    /// The comment on the selected annotation, as the inspector edits it.
+    @Published var selectedCommentText = ""
     @Published var textToInsert = "Text"
     @Published var textFontSize: Double = 15 { didSet { preferences.textFontSize = textFontSize } }
     @Published var selectedTextFontSize: Double = 15
@@ -276,7 +278,7 @@ final class PDFWorkspace: ObservableObject {
     private var textsByCover: [ObjectIdentifier: PDFAnnotation] = [:]
     private var shapeStrokeBeforeEditing: Double?
     private var shapeStrokeWasDirty = false
-    private var lastColourChange: (target: ObjectIdentifier, kind: String, original: NSColor?,
+    private var lastCoalescedChange: (target: ObjectIdentifier, kind: String, original: Any,
                                    wasDirty: Bool, undoCount: Int, at: Date)?
     private var textSizeBeforeEditing: Double?
     private var textSizeWasDirty = false
@@ -766,6 +768,9 @@ final class PDFWorkspace: ObservableObject {
             beginEditingSelectedNote()
         } else if annotation.isSubtype(.freeText) {
             beginInlineTextEditing(annotation)
+        } else if takesComment(annotation) {
+            inspectorVisible = true
+            statusMessage = "Edit the comment in the inspector"
         } else {
             statusMessage = "\(AnnotationEntry(annotation: annotation, pageIndex: currentPageIndex).kind) has no text to edit"
         }
@@ -1497,6 +1502,7 @@ final class PDFWorkspace: ObservableObject {
             hasTextSelection = false
         }
         selectedAnnotation = annotation
+        selectedCommentText = annotation.flatMap { takesComment($0) ? $0.contents : nil } ?? ""
         synchronizeSelectedShapeAppearance()
         synchronizeSelectedTextAppearance()
         pdfView?.refreshInteractionAppearance()
@@ -1700,13 +1706,26 @@ final class PDFWorkspace: ObservableObject {
         to new: NSColor?,
         apply: @escaping (NSColor?) -> Void
     ) {
+        registerCoalescedChange(on: annotation, kind: kind, from: old, to: new, apply: apply)
+    }
+
+    /// One undo step for a run of changes to the same thing on the same annotation: every
+    /// point of a drag across a colour wheel, every key typed into a comment.
+    private func registerCoalescedChange<Value>(
+        on annotation: PDFAnnotation,
+        kind: String,
+        from old: Value,
+        to new: Value,
+        apply: @escaping (Value) -> Void
+    ) {
         var original = old
         var wasDirty = isDirty
-        if let last = lastColourChange,
+        if let last = lastCoalescedChange,
            last.target == ObjectIdentifier(annotation), last.kind == kind,
-           last.undoCount == undoActions.count, Date().timeIntervalSince(last.at) < 1.5 {
+           last.undoCount == undoActions.count, Date().timeIntervalSince(last.at) < 1.5,
+           let earlier = last.original as? Value {
             undoActions.removeLast()
-            original = last.original
+            original = earlier
             wasDirty = last.wasDirty
         }
         let restore = original
@@ -1717,8 +1736,58 @@ final class PDFWorkspace: ObservableObject {
             apply(new)
             self?.pdfView?.needsDisplay = true
         })
-        lastColourChange = (ObjectIdentifier(annotation), kind, original, wasDirty, undoActions.count, Date())
+        lastCoalescedChange = (ObjectIdentifier(annotation), kind, original, wasDirty, undoActions.count, Date())
         pdfView?.needsDisplay = true
+    }
+
+    // MARK: - Comments
+
+    /// Whether an annotation can carry a comment of the reader's own: a highlight, a shape,
+    /// a line. Notes and text boxes are their own text and have their own editors; form
+    /// fields, links and the app's own bookkeeping are not comments at all.
+    func takesComment(_ annotation: PDFAnnotation) -> Bool {
+        !annotation.isSubtype(.text) && !annotation.isSubtype(.freeText)
+            && !annotation.isSubtype(.widget) && !annotation.isSubtype(.link)
+            && !annotation.isSubtype(.popup) && !(annotation is ImageStampAnnotation)
+            && annotation.contents != RedactionFlattener.marker
+            && !TextEditMarker.isTextEdit(annotation)
+    }
+
+    /// The comment on an annotation, if it has one worth showing.
+    ///
+    /// A reviewer commenting on a passage in Acrobat or Word leaves a highlight with the
+    /// comment in its text, behind a popup that starts closed. PDFKit reads it; nothing in
+    /// the app showed it, so a document full of comments looked like a document full of
+    /// yellow.
+    func comment(on annotation: PDFAnnotation) -> String? {
+        guard takesComment(annotation) else { return nil }
+        let text = (annotation.contents ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        return text.isEmpty ? nil : text
+    }
+
+    var selectedAnnotationTakesComment: Bool {
+        selectedAnnotation.map(takesComment) ?? false
+    }
+
+    /// Who left the selected annotation's comment, and when.
+    var selectedCommentAttribution: String? {
+        guard let annotation = selectedAnnotation else { return nil }
+        return AnnotationEntry(annotation: annotation, pageIndex: currentPageIndex).attribution
+    }
+
+    /// Writes the reader's comment on the selected annotation.
+    func setSelectedComment(_ text: String) {
+        selectedCommentText = text
+        guard selectedAnnotationTakesComment, let annotation = selectedAnnotation else { return }
+        let old = annotation.contents ?? ""
+        guard old != text else { return }
+        annotation.contents = text
+        annotation.popup?.contents = text
+        registerCoalescedChange(on: annotation, kind: "comment", from: old, to: text) { value in
+            annotation.contents = value
+            annotation.popup?.contents = value
+        }
+        changed("Comment updated")
     }
 
     /// The width of a drawing's stroke, wherever that drawing keeps it.
@@ -3514,6 +3583,9 @@ struct AnnotationEntry: Identifiable {
 
     var isEditable: Bool {
         annotation.isSubtype(.text) || annotation.isSubtype(.freeText)
+            || annotation.isSubtype(.highlight) || annotation.isSubtype(.underline)
+            || annotation.isSubtype(.strikeOut) || annotation.isSubtype(.square)
+            || annotation.isSubtype(.circle) || annotation.isSubtype(.line) || annotation.isSubtype(.ink)
     }
 
     var symbol: String {

@@ -169,7 +169,7 @@ struct PageSidebar: View {
                             .frame(width: 15)
                         VStack(alignment: .leading, spacing: 1) {
                             Text(entry.summary)
-                                .lineLimit(2)
+                                .lineLimit(6)
                             Text("\(entry.kind) · page \(entry.pageIndex + 1)")
                                 .font(.caption2)
                                 .foregroundStyle(.secondary)
@@ -498,6 +498,32 @@ struct InspectorPanel: View {
                 }
                 if workspace.selectedAnnotationIsDrawing {
                     selectedDrawingControls
+                }
+                if workspace.selectedAnnotationTakesComment {
+                    // A reviewer's comment on a highlight lives in the highlight itself, behind
+                    // a popup that starts closed. Here it is read, and answered or changed.
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline) {
+                            Text("Comment").font(.callout)
+                            Spacer()
+                            if let attribution = workspace.selectedCommentAttribution {
+                                Text(attribution)
+                                    .font(.caption2)
+                                    .foregroundStyle(.secondary)
+                                    .lineLimit(1)
+                            }
+                        }
+                        TextField(
+                            "Add a comment",
+                            text: Binding(
+                                get: { workspace.selectedCommentText },
+                                set: { workspace.setSelectedComment($0) }
+                            ),
+                            axis: .vertical
+                        )
+                        .textFieldStyle(.roundedBorder)
+                        .lineLimit(3...14)
+                    }
                 }
                 if workspace.selectedAnnotationIsMarkup {
                     if workspace.selectedAnnotationIsHighlight {

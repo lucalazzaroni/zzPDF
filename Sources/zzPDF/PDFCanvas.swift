@@ -192,6 +192,53 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
         interactionOverlay.needsDisplay = true
         for overlay in pageOverlays.values { overlay.refresh() }
         scheduleAnnotationSharpening()
+        followScrolling()
+    }
+
+    private weak var observedClipView: NSClipView?
+
+    /// The overlay sits over the page view rather than inside the page, so it has to be told
+    /// when the page scrolls under it. Without this the selection outline, and the marks
+    /// showing which highlights carry a comment, stayed where they were while the page moved.
+    private func followScrolling() {
+        guard let clip = documentView?.enclosingScrollView?.contentView, clip !== observedClipView else { return }
+        if let old = observedClipView {
+            NotificationCenter.default.removeObserver(self, name: NSView.boundsDidChangeNotification, object: old)
+        }
+        observedClipView = clip
+        clip.postsBoundsChangedNotifications = true
+        NotificationCenter.default.addObserver(
+            self, selector: #selector(pageScrolled(_:)),
+            name: NSView.boundsDidChangeNotification, object: clip
+        )
+    }
+
+    @objc private func pageScrolled(_ notification: Notification) {
+        interactionOverlay.needsDisplay = true
+    }
+
+    // MARK: - Comments on the page
+
+    private lazy var commentMark: NSImage? = {
+        let configuration = NSImage.SymbolConfiguration(pointSize: 11, weight: .semibold)
+            .applying(.init(paletteColors: [.white, .systemOrange]))
+        return NSImage(systemSymbolName: "text.bubble.fill", accessibilityDescription: "Comment")?
+            .withSymbolConfiguration(configuration)
+    }()
+
+    /// A small speech bubble at the corner of every annotation on screen that carries a
+    /// comment, so a reader can see where a reviewer said something without resting the
+    /// pointer on every highlight in turn.
+    private func drawCommentMarks(workspace: PDFWorkspace) {
+        guard let mark = commentMark else { return }
+        let size = CGSize(width: 15, height: 13)
+        for page in visiblePages {
+            for annotation in page.annotations where workspace.comment(on: annotation) != nil {
+                let rect = convert(annotation.bounds, from: page)
+                let origin = CGPoint(x: rect.maxX - size.width * 0.35, y: rect.maxY - size.height * 0.4)
+                mark.draw(in: CGRect(origin: origin, size: size))
+            }
+        }
     }
 
     // MARK: - Keeping annotations sharp
@@ -336,7 +383,21 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
             hoverPoint = nil
         }
         cursor(at: viewPoint).set()
+        let tip = commentTip(at: viewPoint)
+        if interactionOverlay.toolTip != tip { interactionOverlay.toolTip = tip }
         interactionOverlay.needsDisplay = true
+    }
+
+    /// The comment on whatever annotation is under the pointer, with who left it, the way a
+    /// reviewer's comments are read in any other PDF reader: by resting on the highlight.
+    func commentTip(at viewPoint: CGPoint) -> String? {
+        guard let workspace, let page = page(for: viewPoint, nearest: false) else { return nil }
+        let point = convert(viewPoint, to: page)
+        guard let annotation = page.annotations.reversed().first(where: {
+            $0.bounds.contains(point) && workspace.comment(on: $0) != nil
+        }), let comment = workspace.comment(on: annotation) else { return nil }
+        let author = annotation.userName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return author.isEmpty ? comment : "\(author): \(comment)"
     }
 
     override func mouseExited(with event: NSEvent) {
@@ -1011,6 +1072,7 @@ final class InteractivePDFView: PDFView, PDFPageOverlayViewProvider {
 
     fileprivate func drawInteractionOverlay() {
         guard let workspace else { return }
+        drawCommentMarks(workspace: workspace)
 
         if let annotation = workspace.selectedAnnotation, let page = annotation.page {
             func drawHandle(at point: CGPoint) {
